@@ -249,6 +249,50 @@ async function streamWithYtdlp(url) {
   return streamWithFfmpeg(directUrl, isVkUrl(url) ? { referer: 'https://vk.com/' } : {});
 }
 
+let playdlReady = null;
+
+function ensurePlaydl() {
+  if (!playdlReady) {
+    playdlReady = playdl.getFreeClientID()
+      .then(() => console.log('play-dl: SoundCloud готов'))
+      .catch((err) => {
+        console.warn('play-dl: SoundCloud client_id:', err.message);
+      });
+  }
+  return playdlReady;
+}
+
+async function findSoundCloudUrl(query) {
+  await ensurePlaydl();
+
+  const queries = [
+    query,
+    query.split(/\s[-–|]\s/)[0].trim(),
+  ].filter((q, i, arr) => q && arr.indexOf(q) === i);
+
+  for (const q of queries) {
+    try {
+      const scResults = await playdl.search(q, {
+        limit: 8,
+        source: { soundcloud: 'tracks' },
+      });
+      if (scResults[0]?.url) return scResults[0].url;
+    } catch (e) {
+      console.error('SoundCloud (tracks):', e.message);
+    }
+
+    try {
+      const mixed = await playdl.search(q, { limit: 15 });
+      const hit = mixed.find((r) => r.url && /soundcloud\.com/i.test(r.url));
+      if (hit?.url) return hit.url;
+    } catch (e) {
+      console.error('SoundCloud (mixed):', e.message);
+    }
+  }
+
+  return null;
+}
+
 async function resolveSpotifyUrl(url) {
   const trackUrl = url.split('?')[0];
   if (!/\/track\//i.test(trackUrl)) {
@@ -274,17 +318,17 @@ async function resolveSpotifyUrl(url) {
 
   console.log(`Spotify → ищем: ${query}`);
 
-  try {
-    const scResults = await playdl.search(query, {
-      limit: 5,
-      source: { soundcloud: 'tracks' },
-    });
-    if (scResults[0]?.url) {
-      console.log(`Найдено на SoundCloud: ${scResults[0].url}`);
-      return scResults[0].url;
-    }
-  } catch (e) {
-    console.error('Поиск SoundCloud:', e.message);
+  const scUrl = await findSoundCloudUrl(query);
+  if (scUrl) {
+    console.log(`Найдено на SoundCloud: ${scUrl}`);
+    return scUrl;
+  }
+
+  if (!YOUTUBE_COOKIES_FILE) {
+    throw new Error(
+      'Spotify: на SoundCloud не нашли. YouTube на VPS без cookies не играет — ' +
+      'настройте YOUTUBE_COOKIES_FILE (инструкция) или киньте прямую ссылку VK / SoundCloud',
+    );
   }
 
   const ytResults = await playdl.search(query, { limit: 3 });
@@ -306,10 +350,17 @@ async function resolvePlaybackUrl(url) {
 async function getAudioStream(url) {
   const playbackUrl = await resolvePlaybackUrl(url);
 
+  if (isYoutubeUrl(playbackUrl) && !YOUTUBE_COOKIES_FILE) {
+    throw new Error(
+      'YouTube на VPS без cookies не играет. Настройте YOUTUBE_COOKIES_FILE или используйте VK / SoundCloud',
+    );
+  }
+
   if (usesYtdlp(playbackUrl)) {
     return streamWithYtdlp(playbackUrl);
   }
 
+  await ensurePlaydl();
   const streamInfo = await playdl.stream(playbackUrl);
   return {
     stream: streamInfo.stream,
@@ -389,8 +440,9 @@ async function playNext(guild) {
   }
 }
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`Бот запущен как ${client.user.tag}`);
+  await ensurePlaydl();
 });
 
 client.on('messageCreate', async (message) => {
