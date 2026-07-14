@@ -24,18 +24,24 @@
 > Во время установки Node.js в фиолетовых окнах просто жмите **Enter** → **Tab** → **Enter**.
 
 ```bash
-apt install -y curl git build-essential ffmpeg
+apt install -y curl git build-essential
+apt install -y ffmpeg
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt install -y nodejs
 curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp
 chmod a+rx /usr/local/bin/yt-dlp
 apt remove -y yt-dlp 2>/dev/null; hash -r
-node -v && npm -v && yt-dlp --version
+node -v && npm -v && yt-dlp --version && ffmpeg -version | head -1
 ```
 
-Должно показать Node.js `v20.x`, npm и **свежую** версию yt-dlp (например `2026.07.04`).
+Должно показать Node.js `v20.x`, npm, **свежую** версию yt-dlp и **ffmpeg** (не «command not found»).
 
-> **Важно:** нужен **системный ffmpeg** (`apt install ffmpeg`). Встроенный ffmpeg-static на VPS иногда падает (SIGSEGV) на VK-потоках.  
+> **Обязательно: ffmpeg** — без него бот **не играет** VK, SoundCloud и Spotify.  
+> Команда: `apt install -y ffmpeg`  
+> Проверка: `ffmpeg -version` → путь `/usr/bin/ffmpeg`  
+> При старте бота должно быть: `ffmpeg: /usr/bin/ffmpeg` (не предупреждение «НЕ НАЙДЕН»).
+
+> **Важно:** нужен **системный ffmpeg** (`apt install ffmpeg`). Встроенный ffmpeg-static из npm на VPS иногда падает (SIGSEGV) на VK-потоках.  
 > Не скачивайте файл `yt-dlp` (скрипт) — на Ubuntu он может тянуть старый модуль.  
 > Нужен именно **`yt-dlp_linux`** (готовый бинарник).
 
@@ -177,12 +183,68 @@ pm2 save
 
 ---
 
-## 10. YouTube: cookies (обязательно для VPS)
+## 10. YouTube: cookies (если bgutil не хватит)
 
 YouTube часто блокирует IP серверов (`Sign in to confirm you're not a bot`).  
-Без cookies YouTube на VPS **обычно не работает**. SoundCloud может работать и без них.
+Сначала попробуйте **bgutil** (раздел 10a) — часто работает **без cookies**.  
+Cookies — запасной путь, если bgutil не помог или нужны приватные/возрастные видео.
 
-### 10.1. Экспорт cookies на ПК (Chrome)
+### 10.0. Если забыли ffmpeg (бот пишет «ffmpeg НЕ НАЙДЕН»)
+
+```bash
+apt install -y ffmpeg
+ffmpeg -version
+cd /opt/nyamka-bot
+npm start
+```
+
+При старте: `ffmpeg: /usr/bin/ffmpeg`
+
+---
+
+### 10a. YouTube: bgutil (обход бот-чека без Google-аккаунта)
+
+По мотивам [гайда про обход бот-чека](https://github.com/mikedigriz/YT/blob/main/docs/how-to/05-obhod-bot-cheka.md).
+
+**1. Сервер токенов (Docker):**
+
+```bash
+docker run --name bgutil-provider -d --restart unless-stopped \
+  -p 127.0.0.1:4416:4416 \
+  brainicism/bgutil-ytdlp-pot-provider
+curl -s 127.0.0.1:4416/ping
+```
+
+**2. Плагин для yt-dlp:**
+
+```bash
+mkdir -p ~/.config/yt-dlp/plugins
+cd ~/.config/yt-dlp/plugins
+curl -L -o bgutil-ytdlp-pot-provider.zip \
+  https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip
+```
+
+**3. Проверка:**
+
+```bash
+yt-dlp -v --simulate "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1 | grep -i pot
+```
+
+Должны быть строки про `bgutil` / `pot`.
+
+**4. Вернуться к боту:**
+
+```bash
+cd /opt/nyamka-bot
+npm start
+```
+
+> Cookies (раздел 10.1 ниже) — **запасной путь**, если bgutil не помог.  
+> Если ошибка `429` с первого запроса — бан IP VPS, не помогут ни bgutil, ни cookies.
+
+---
+
+### 10.1. YouTube: cookies (запасной путь)
 
 1. Установите расширение **«Get cookies.txt LOCALLY»** в Chrome  
    (именно с словом LOCALLY — оно не отправляет данные в интернет)
@@ -355,6 +417,7 @@ pm2 status
 pm2 logs nyamka --err --lines 50
 which yt-dlp
 yt-dlp --version
+ffmpeg -version | head -1
 ```
 
 ---
@@ -363,7 +426,7 @@ yt-dlp --version
 
 **Первая установка:**
 ```
-PuTTY → Node.js + yt-dlp_linux → git clone → npm install → cookies на сервер → nano .env → npm start
+PuTTY → apt install ffmpeg → Node.js + yt-dlp_linux → git clone → npm install → bgutil (YouTube) → nano .env → npm start
 ```
 
 **Обновление кода:**

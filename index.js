@@ -220,11 +220,21 @@ async function resolveSpotifyUrl(url) {
     } catch (e) {
       console.error('ytsearch:', e.message);
     }
+  } else {
+    try {
+      const ytUrl = await ytdlpSearch('ytsearch1', query);
+      if (ytUrl) {
+        console.log(`Найдено на YouTube (bgutil): ${ytUrl}`);
+        return ytUrl;
+      }
+    } catch (e) {
+      console.error('ytsearch:', e.message);
+    }
   }
 
   throw new Error(
-    `Spotify: не нашли «${query}» на SoundCloud. ` +
-    'Киньте прямую ссылку VK / SoundCloud, или настройте YOUTUBE_COOKIES_FILE',
+    `Spotify: не нашли «${query}» на SoundCloud/YouTube. ` +
+    'Киньте прямую ссылку VK / SoundCloud',
   );
 }
 
@@ -300,12 +310,6 @@ function streamWithYtdlp(url) {
 
 async function getAudioStream(url) {
   const playbackUrl = await resolvePlaybackUrl(url);
-
-  if (isYoutubeUrl(playbackUrl) && !YOUTUBE_COOKIES_FILE) {
-    throw new Error(
-      'YouTube на VPS без cookies не играет. Настройте YOUTUBE_COOKIES_FILE или используйте VK / SoundCloud',
-    );
-  }
 
   if (!getFfmpegPath()) {
     throw new Error('ffmpeg не найден. На сервере: apt install -y ffmpeg');
