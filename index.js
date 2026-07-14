@@ -171,7 +171,8 @@ function streamWithFfmpeg(directUrl, { referer } = {}) {
 
   const args = [
     '-nostdin',
-    '-loglevel', 'error',
+    '-loglevel', 'warning',
+    '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
     '-reconnect', '1',
     '-reconnect_streamed', '1',
     '-reconnect_delay_max', '5',
@@ -187,9 +188,9 @@ function streamWithFfmpeg(directUrl, { referer } = {}) {
   args.push(
     '-i', directUrl,
     '-vn',
-    '-acodec', 'libopus',
-    '-b:a', '96k',
-    '-f', 'opus',
+    '-acodec', 'libmp3lame',
+    '-b:a', '128k',
+    '-f', 'mp3',
     'pipe:1',
   );
 
@@ -223,18 +224,20 @@ function streamWithFfmpeg(directUrl, { referer } = {}) {
       settled = true;
       resolve({
         stream: proc.stdout,
-        inputType: StreamType.OggOpus,
+        inputType: StreamType.Arbitrary,
         cleanup: () => {
           if (!proc.killed) proc.kill('SIGTERM');
         },
       });
     });
 
-    proc.on('close', (code) => {
+    proc.on('close', (code, signal) => {
       clearTimeout(timeout);
-      if (!settled && code !== 0) {
-        fail(stderr.trim() || `ffmpeg завершился с кодом ${code}`);
-      }
+      if (settled) return;
+      if (code === 0) return;
+      const detail = stderr.trim()
+        || (signal ? `сигнал ${signal}` : `код ${code}`);
+      fail(`ffmpeg: ${detail}`);
     });
   });
 }
@@ -247,14 +250,28 @@ async function streamWithYtdlp(url) {
 }
 
 async function resolveSpotifyUrl(url) {
-  const meta = await playdl.spotify(url);
-
-  if (meta.type !== 'track') {
+  const trackUrl = url.split('?')[0];
+  if (!/\/track\//i.test(trackUrl)) {
     throw new Error('Spotify: поддерживается только ссылка на один трек (не альбом/плейлист)');
   }
 
-  const artist = meta.artists?.[0]?.name || meta.subtitle || '';
-  const query = `${meta.name} ${artist}`.trim();
+  const res = await fetch(
+    `https://open.spotify.com/oembed?url=${encodeURIComponent(trackUrl)}`,
+  );
+  if (!res.ok) {
+    throw new Error('Spotify: не удалось получить информацию о треке');
+  }
+
+  const data = await res.json();
+  const query = String(data.title || '')
+    .replace(/\s*\|\s*Spotify\s*$/i, '')
+    .replace(/\s+on Spotify\s*$/i, '')
+    .trim();
+
+  if (!query) {
+    throw new Error('Spotify: не удалось прочитать название трека');
+  }
+
   console.log(`Spotify → ищем: ${query}`);
 
   try {
