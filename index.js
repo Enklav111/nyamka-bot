@@ -11,6 +11,7 @@ const {
   StreamType,
 } = require('@discordjs/voice');
 const playdl = require('play-dl');
+const ffmpegPath = require('ffmpeg-static');
 
 const {
   DISCORD_TOKEN,
@@ -77,7 +78,13 @@ function buildYtdlpArgs(url) {
     args.push('--referer', 'https://vk.com/');
   }
 
-  args.push('-f', 'bestaudio/best', '-o', '-', '--no-warnings');
+  if (ffmpegPath) {
+    args.push('--ffmpeg-location', ffmpegPath);
+  }
+
+  // VK и др. часто отдают HLS — в pipe напрямую ломается (Broken pipe).
+  // Перекодируем в opus-поток через ffmpeg, без сохранения файла на диск.
+  args.push('-f', 'bestaudio/best', '-x', '--audio-format', 'opus', '-o', '-', '--no-warnings');
 
   if (isVkPlaylistUrl(url)) {
     args.push('--playlist-items', '1');
@@ -96,6 +103,7 @@ function stopStream() {
 
 function streamWithYtdlp(url) {
   const args = buildYtdlpArgs(url);
+  const startTimeoutMs = isVkUrl(url) ? 45_000 : 25_000;
 
   return new Promise((resolve, reject) => {
     const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -113,7 +121,7 @@ function streamWithYtdlp(url) {
       const text = chunk.toString();
       stderr += text;
       console.error('yt-dlp:', text.trim());
-      if (/ERROR:/i.test(text)) {
+      if (/ERROR:/i.test(text) && !/Broken pipe/i.test(text)) {
         fail(text.trim());
       }
     });
@@ -129,7 +137,7 @@ function streamWithYtdlp(url) {
     proc.on('spawn', () => {
       const timeout = setTimeout(() => {
         fail('yt-dlp: таймаут — аудиопоток не начался');
-      }, 20_000);
+      }, startTimeoutMs);
 
       proc.stdout.once('data', () => {
         clearTimeout(timeout);
