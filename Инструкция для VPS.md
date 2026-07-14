@@ -24,7 +24,7 @@
 > Во время установки Node.js в фиолетовых окнах просто жмите **Enter** → **Tab** → **Enter**.
 
 ```bash
-apt install -y curl git build-essential
+apt install -y curl git build-essential ffmpeg
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt install -y nodejs
 curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp
@@ -35,7 +35,7 @@ node -v && npm -v && yt-dlp --version
 
 Должно показать Node.js `v20.x`, npm и **свежую** версию yt-dlp (например `2026.07.04`).
 
-> **Важно:** не используйте `apt install yt-dlp` — ставит 2022.  
+> **Важно:** нужен **системный ffmpeg** (`apt install ffmpeg`). Встроенный ffmpeg-static на VPS иногда падает (SIGSEGV) на VK-потоках.  
 > Не скачивайте файл `yt-dlp` (скрипт) — на Ubuntu он может тянуть старый модуль.  
 > Нужен именно **`yt-dlp_linux`** (готовый бинарник).
 
