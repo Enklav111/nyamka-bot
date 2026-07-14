@@ -1,5 +1,6 @@
 require('dotenv').config();
 const { spawn, execSync } = require('child_process');
+const { PassThrough } = require('stream');
 const { existsSync } = require('fs');
 const { Client, GatewayIntentBits } = require('discord.js');
 const {
@@ -121,7 +122,7 @@ function resolveCookiesPath(url, useCookies = true) {
 }
 
 function getYtdlpFormat(url) {
-  if (isYoutubeUrl(url)) return 'bestaudio/best/worst';
+  if (isYoutubeUrl(url)) return 'bestaudio[ext=webm]/bestaudio/best/worst';
   if (isVkUrl(url)) return 'bestaudio[protocol^=http]/bestaudio/best';
   return 'bestaudio/best';
 }
@@ -139,12 +140,12 @@ function getYtdlpStreamAttempts(url) {
 
   // VPS-IP часто требует cookies; bgutil+mweb — для PO Token
   return [
-    { label: 'mweb+cookies', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb', hlsMpegts: true },
-    { label: 'mweb+cookies+missing_pot', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb;formats=missing_pot', hlsMpegts: true },
+    { label: 'mweb+cookies', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb', hlsMpegts: true },
+    { label: 'mweb+cookies+missing_pot', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb;formats=missing_pot', hlsMpegts: true },
     { label: 'web_safari+m3u8', format: 'bestaudio[protocol*=m3u8]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_safari', hlsMpegts: true },
-    { label: 'web_creator+cookies', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_creator', hlsMpegts: true },
-    { label: 'mweb+bgutil', format: 'bestaudio/best/worst', useCookies: false, youtubeExtractorArgs: 'youtube:player_client=mweb', hlsMpegts: true },
-    { label: 'android_vr', format: 'bestaudio/best/worst', useCookies: false, youtubeExtractorArgs: 'youtube:player_client=android_vr', hlsMpegts: true },
+    { label: 'web_creator+cookies', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_creator', hlsMpegts: true },
+    { label: 'mweb+bgutil', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: false, youtubeExtractorArgs: 'youtube:player_client=mweb', hlsMpegts: true },
+    { label: 'android_vr', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: false, youtubeExtractorArgs: 'youtube:player_client=android_vr', hlsMpegts: true },
     { label: 'best_any', format: 'best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb;formats=missing_pot', hlsMpegts: true },
   ];
 }
@@ -319,6 +320,11 @@ async function resolvePlaybackUrl(url) {
   return url;
 }
 
+function getStreamInputType(url) {
+  if (isYoutubeUrl(url)) return StreamType.WebmOpus;
+  return StreamType.Arbitrary;
+}
+
 function streamWithYtdlpOnce(url, attempt) {
   const args = [
     ...buildYtdlpBaseArgs(url, {
@@ -338,12 +344,18 @@ function streamWithYtdlpOnce(url, attempt) {
 
   return new Promise((resolve, reject) => {
     const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const audioOut = new PassThrough();
+    proc.stdout.pipe(audioOut);
+
     let stderr = '';
     let settled = false;
+    let streamStarted = false;
 
     const fail = (message) => {
+      if (streamStarted) return;
       if (settled) return;
       settled = true;
+      audioOut.destroy();
       if (!proc.killed) proc.kill('SIGTERM');
       reject(new Error(message));
     };
@@ -357,6 +369,7 @@ function streamWithYtdlpOnce(url, attempt) {
       stderr += text;
       const line = text.trim();
       if (line) console.error('yt-dlp:', line);
+      if (streamStarted) return;
       if (/ERROR:/i.test(text) && !/Broken pipe/i.test(text)) {
         fail(text.trim());
       }
@@ -367,19 +380,24 @@ function streamWithYtdlpOnce(url, attempt) {
       fail(err.code === 'ENOENT' ? 'yt-dlp не найден' : err.message);
     });
 
-    proc.stdout.once('data', () => {
+    audioOut.once('data', () => {
       clearTimeout(timeout);
       if (settled) return;
       settled = true;
+      streamStarted = true;
       resolve({
-        stream: proc.stdout,
-        inputType: StreamType.Arbitrary,
-        cleanup: () => { if (!proc.killed) proc.kill('SIGTERM'); },
+        stream: audioOut,
+        inputType: getStreamInputType(url),
+        cleanup: () => {
+          audioOut.destroy();
+          if (!proc.killed) proc.kill('SIGTERM');
+        },
       });
     });
 
     proc.on('close', (code) => {
       clearTimeout(timeout);
+      if (streamStarted) return;
       if (settled) return;
       if (code !== 0) {
         fail(stderr.trim() || `yt-dlp завершился с кодом ${code}`);
