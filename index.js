@@ -11,8 +11,6 @@ const {
   entersState,
   StreamType,
 } = require('@discordjs/voice');
-const ffmpegStatic = require('ffmpeg-static');
-
 const {
   DISCORD_TOKEN,
   VOICE_CHANNEL_ID,
@@ -47,9 +45,9 @@ function getFfmpegPath() {
   }
   try {
     const p = execSync('which ffmpeg', { encoding: 'utf8' }).trim();
-    if (p && existsSync(p)) return p;
+    if (p && existsSync(p) && !p.includes('node_modules')) return p;
   } catch (e) {}
-  return ffmpegStatic || null;
+  return null;
 }
 
 function isYoutubeUrl(url) {
@@ -236,8 +234,15 @@ async function resolvePlaybackUrl(url) {
 }
 
 function streamWithYtdlp(url) {
-  const args = [...buildYtdlpBaseArgs(url), '-f', 'bestaudio/best', '-o', '-', url];
-  const startTimeoutMs = isVkUrl(url) ? 120_000 : 60_000;
+  const args = [
+    ...buildYtdlpBaseArgs(url),
+    '-f', 'bestaudio[protocol^=http]/bestaudio/best',
+    '--hls-use-mpegts',
+    '--concurrent-fragments', '4',
+    '-o', '-',
+    url,
+  ];
+  const startTimeoutMs = (isVkUrl(url) || isSoundCloudUrl(url)) ? 120_000 : 60_000;
 
   console.log('Стрим через yt-dlp...');
 
@@ -387,7 +392,11 @@ async function playNext(guild) {
 client.once('ready', () => {
   const ff = getFfmpegPath();
   console.log(`Бот запущен как ${client.user.tag}`);
-  console.log(`ffmpeg: ${ff || 'НЕ НАЙДЕН — apt install -y ffmpeg'}`);
+  if (!ff) {
+    console.error('⚠️ ffmpeg НЕ НАЙДЕН! Выполните: apt install -y ffmpeg');
+  } else {
+    console.log(`ffmpeg: ${ff}`);
+  }
 });
 
 client.on('messageCreate', async (message) => {
