@@ -50,6 +50,17 @@ function getFfmpegPath() {
   return null;
 }
 
+function getNodePath() {
+  for (const p of ['/usr/bin/node', '/usr/local/bin/node']) {
+    if (existsSync(p)) return p;
+  }
+  try {
+    const p = execSync('which node', { encoding: 'utf8' }).trim();
+    if (p && existsSync(p) && !p.includes('node_modules')) return p;
+  } catch (e) {}
+  return null;
+}
+
 function getDenoPath() {
   for (const p of ['/root/.deno/bin/deno', '/usr/bin/deno', '/usr/local/bin/deno']) {
     if (existsSync(p)) return p;
@@ -63,7 +74,9 @@ function getDenoPath() {
 
 function appendYoutubeRuntimeArgs(args) {
   const deno = getDenoPath();
+  const node = getNodePath();
   if (deno) args.push('--js-runtimes', `deno:${deno}`);
+  else if (node) args.push('--js-runtimes', `node:${node}`);
   args.push('--remote-components', 'ejs:github');
 }
 
@@ -497,7 +510,10 @@ client.once('ready', () => {
     console.log('YouTube cookies: не заданы (для обычных видео достаточно bgutil+mweb)');
   }
   const deno = getDenoPath();
-  console.log(`Deno (JS для yt-dlp): ${deno || 'не установлен — рекомендуется: curl -fsSL https://deno.land/install.sh | sh'}`);
+  const node = getNodePath();
+  if (deno) console.log(`JS runtime для yt-dlp: deno (${deno})`);
+  else if (node) console.log(`JS runtime для yt-dlp: node (${node})`);
+  else console.warn('⚠️ JS runtime для yt-dlp не найден — выполните: apt install -y unzip && curl -fsSL https://deno.land/install.sh | sh');
 });
 
 client.on('messageCreate', async (message) => {
