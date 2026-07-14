@@ -351,6 +351,21 @@ function streamWithYtdlpOnce(url, attempt) {
     let settled = false;
     let streamStarted = false;
 
+    const startStream = () => {
+      if (streamStarted || settled) return;
+      streamStarted = true;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        stream: audioOut,
+        inputType: getStreamInputType(url),
+        cleanup: () => {
+          audioOut.destroy();
+          if (!proc.killed) proc.kill('SIGTERM');
+        },
+      });
+    };
+
     const fail = (message) => {
       if (streamStarted) return;
       if (settled) return;
@@ -369,6 +384,11 @@ function streamWithYtdlpOnce(url, attempt) {
       stderr += text;
       const line = text.trim();
       if (line) console.error('yt-dlp:', line);
+
+      if (!streamStarted && /\[download\]|Downloading .+ format|Writing video/i.test(text)) {
+        startStream();
+      }
+
       if (streamStarted) return;
       if (/ERROR:/i.test(text) && !/Broken pipe/i.test(text)) {
         fail(text.trim());
@@ -378,21 +398,6 @@ function streamWithYtdlpOnce(url, attempt) {
     proc.on('error', (err) => {
       clearTimeout(timeout);
       fail(err.code === 'ENOENT' ? 'yt-dlp не найден' : err.message);
-    });
-
-    audioOut.once('data', () => {
-      clearTimeout(timeout);
-      if (settled) return;
-      settled = true;
-      streamStarted = true;
-      resolve({
-        stream: audioOut,
-        inputType: getStreamInputType(url),
-        cleanup: () => {
-          audioOut.destroy();
-          if (!proc.killed) proc.kill('SIGTERM');
-        },
-      });
     });
 
     proc.on('close', (code) => {
