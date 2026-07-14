@@ -1,4 +1,5 @@
 require('dotenv').config();
+const { spawn } = require('child_process');
 const { Client, GatewayIntentBits } = require('discord.js');
 const {
   joinVoiceChannel,
@@ -7,6 +8,7 @@ const {
   AudioPlayerStatus,
   VoiceConnectionStatus,
   entersState,
+  StreamType,
 } = require('@discordjs/voice');
 const playdl = require('play-dl');
 
@@ -15,9 +17,9 @@ const {
   VOICE_CHANNEL_ID,
   LINKS_CHANNEL_ID,
   PLAYED_CHANNEL_ID,
+  YOUTUBE_COOKIES_FILE,
 } = process.env;
 
-// Простая проверка "это похоже на ссылку"
 const URL_REGEX = /(https?:\/\/[^\s]+)/i;
 
 const client = new Client({
@@ -29,13 +31,76 @@ const client = new Client({
   ],
 });
 
-// Очередь треков: { url, authorTag, sourceMessageId }
 const queue = [];
 const player = createAudioPlayer();
 let connection = null;
 let isPlaying = false;
+let streamCleanup = () => {};
 
-// Подключение к голосовому каналу (переиспользуем, если уже подключены)
+function isYoutubeUrl(url) {
+  return /(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(url);
+}
+
+function stopStream() {
+  streamCleanup();
+  streamCleanup = () => {};
+}
+
+function streamWithYtdlp(url) {
+  const args = [
+    '-f', 'bestaudio/best',
+    '-o', '-',
+    '--no-playlist',
+    '--no-warnings',
+    '--no-call-home',
+    url,
+  ];
+
+  if (YOUTUBE_COOKIES_FILE) {
+    args.unshift(YOUTUBE_COOKIES_FILE);
+    args.unshift('--cookies');
+  }
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    proc.stderr.on('data', (chunk) => {
+      console.error('yt-dlp:', chunk.toString().trim());
+    });
+
+    proc.on('error', (err) => {
+      if (err.code === 'ENOENT') {
+        reject(new Error('yt-dlp не найден. Установите: apt install -y yt-dlp'));
+        return;
+      }
+      reject(err);
+    });
+
+    proc.on('spawn', () => {
+      resolve({
+        stream: proc.stdout,
+        inputType: StreamType.Arbitrary,
+        cleanup: () => {
+          if (!proc.killed) proc.kill('SIGTERM');
+        },
+      });
+    });
+  });
+}
+
+async function getAudioStream(url) {
+  if (isYoutubeUrl(url)) {
+    return streamWithYtdlp(url);
+  }
+
+  const streamInfo = await playdl.stream(url);
+  return {
+    stream: streamInfo.stream,
+    inputType: streamInfo.type,
+    cleanup: () => {},
+  };
+}
+
 async function ensureConnection(guild) {
   if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
     return connection;
@@ -51,7 +116,6 @@ async function ensureConnection(guild) {
   return connection;
 }
 
-// Берём следующий трек из очереди и играем
 async function playNext(guild) {
   if (isPlaying) return;
   const item = queue.shift();
@@ -64,27 +128,23 @@ async function playNext(guild) {
   try {
     await ensureConnection(guild);
 
-    // Убираем сообщение из "списка ещё не сыгранных"
     try {
       const msg = await linksChannel.messages.fetch(item.sourceMessageId);
       await msg.delete();
-    } catch (e) {
-      // сообщение уже могли удалить вручную — не критично
-    }
+    } catch (e) {}
 
-    // Публикуем во "второй лист" — играет сейчас
     const nowPlayingMsg = await playedChannel.send(
       `▶️ Сейчас играет: ${item.url}\nДобавил: ${item.authorTag}`
     );
 
-    const streamInfo = await playdl.stream(item.url);
-    const resource = createAudioResource(streamInfo.stream, {
-      inputType: streamInfo.type,
-    });
+    const { stream, inputType, cleanup } = await getAudioStream(item.url);
+    streamCleanup = cleanup;
 
+    const resource = createAudioResource(stream, { inputType });
     player.play(resource);
 
     player.once(AudioPlayerStatus.Idle, async () => {
+      stopStream();
       isPlaying = false;
       try {
         await nowPlayingMsg.edit(`✅ Отыграно: ${item.url}\nДобавил: ${item.authorTag}`);
@@ -94,6 +154,7 @@ async function playNext(guild) {
 
     player.once('error', async (err) => {
       console.error('Ошибка воспроизведения:', err);
+      stopStream();
       isPlaying = false;
       try {
         await nowPlayingMsg.edit(`⚠️ Не удалось воспроизвести: ${item.url}`);
@@ -102,6 +163,7 @@ async function playNext(guild) {
     });
   } catch (err) {
     console.error('Ошибка при обработке ссылки:', err);
+    stopStream();
     isPlaying = false;
     try {
       await playedChannel.send(`⚠️ Не удалось воспроизвести: ${item.url}`);
@@ -121,7 +183,6 @@ client.on('messageCreate', async (message) => {
   const match = message.content.match(URL_REGEX);
 
   if (!match) {
-    // Канал строго для ссылок — всё остальное удаляем
     try {
       await message.delete();
     } catch (e) {}
