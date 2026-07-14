@@ -82,6 +82,13 @@ function getCookiesFile(url) {
   return null;
 }
 
+function getYtdlpFormat(url) {
+  // YouTube отдаёт audio через m3u8 — фильтр protocol^=http их отсекает
+  if (isYoutubeUrl(url)) return 'ba/b';
+  if (isVkUrl(url)) return 'bestaudio[protocol^=http]/bestaudio/best';
+  return 'bestaudio/best';
+}
+
 function buildYtdlpBaseArgs(url) {
   const args = [];
 
@@ -246,7 +253,7 @@ async function resolvePlaybackUrl(url) {
 function streamWithYtdlp(url) {
   const args = [
     ...buildYtdlpBaseArgs(url),
-    '-f', 'bestaudio[protocol^=http]/bestaudio/best',
+    '-f', getYtdlpFormat(url),
     '--hls-use-mpegts',
     '--concurrent-fragments', '4',
     '-o', '-',
