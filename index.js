@@ -82,22 +82,54 @@ function getCookiesFile(url) {
   return null;
 }
 
+function resolveCookiesPath(url, useCookies = true) {
+  if (!useCookies) return null;
+  const direct = url ? getCookiesFile(url) : null;
+  if (direct) return direct;
+  if (YOUTUBE_COOKIES_FILE && (!url || isYoutubeUrl(url))) return YOUTUBE_COOKIES_FILE;
+  return null;
+}
+
 function getYtdlpFormat(url) {
-  // YouTube отдаёт audio через m3u8 — фильтр protocol^=http их отсекает
-  if (isYoutubeUrl(url)) return 'ba/b';
+  if (isYoutubeUrl(url)) return 'bestaudio/best/worst';
   if (isVkUrl(url)) return 'bestaudio[protocol^=http]/bestaudio/best';
   return 'bestaudio/best';
 }
 
-function buildYtdlpBaseArgs(url) {
+function getYtdlpStreamAttempts(url) {
+  if (!isYoutubeUrl(url)) {
+    return [{
+      label: 'default',
+      format: getYtdlpFormat(url),
+      useCookies: true,
+      youtubeExtractorArgs: null,
+      hlsMpegts: isVkUrl(url) || isSoundCloudUrl(url),
+    }];
+  }
+
+  return [
+    { label: 'default', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: null, hlsMpegts: true },
+    { label: 'missing_pot', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:formats=missing_pot', hlsMpegts: true },
+    { label: 'web_safari', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_safari', hlsMpegts: true },
+    { label: 'm3u8', format: 'bestaudio[protocol*=m3u8]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_safari', hlsMpegts: true },
+    { label: 'best_any', format: 'best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:formats=missing_pot', hlsMpegts: true },
+    { label: 'no_cookies', format: 'bestaudio/best/worst', useCookies: false, youtubeExtractorArgs: 'youtube:player_client=web_safari', hlsMpegts: true },
+  ];
+}
+
+function buildYtdlpBaseArgs(url, { useCookies = true, youtubeExtractorArgs = null } = {}) {
   const args = [];
 
-  const cookies = getCookiesFile(url);
+  const cookies = resolveCookiesPath(url, useCookies);
   if (cookies) args.push('--cookies', cookies);
 
   if (isVkUrl(url)) {
     args.push('--user-agent', YTDLP_USER_AGENT);
     args.push('--referer', 'https://vk.com/');
+  }
+
+  if (youtubeExtractorArgs && url && isYoutubeUrl(url)) {
+    args.push('--extractor-args', youtubeExtractorArgs);
   }
 
   const ff = getFfmpegPath();
@@ -163,8 +195,9 @@ function runProcess(cmd, args, { timeoutMs = 60_000, label = cmd } = {}) {
 }
 
 async function ytdlpSearch(prefix, query) {
+  const forYoutube = prefix.startsWith('yt');
   const args = [
-    ...buildYtdlpBaseArgs(null),
+    ...buildYtdlpBaseArgs(forYoutube ? 'https://youtube.com/' : null, { useCookies: forYoutube }),
     '--flat-playlist',
     '--print', 'webpage_url',
     `${prefix}:${query}`,
@@ -250,18 +283,22 @@ async function resolvePlaybackUrl(url) {
   return url;
 }
 
-function streamWithYtdlp(url) {
+function streamWithYtdlpOnce(url, attempt) {
   const args = [
-    ...buildYtdlpBaseArgs(url),
-    '-f', getYtdlpFormat(url),
-    '--hls-use-mpegts',
-    '--concurrent-fragments', '4',
-    '-o', '-',
-    url,
+    ...buildYtdlpBaseArgs(url, {
+      useCookies: attempt.useCookies,
+      youtubeExtractorArgs: attempt.youtubeExtractorArgs,
+    }),
+    '-f', attempt.format,
   ];
-  const startTimeoutMs = (isVkUrl(url) || isSoundCloudUrl(url)) ? 120_000 : 60_000;
 
-  console.log('Стрим через yt-dlp...');
+  if (attempt.hlsMpegts) {
+    args.push('--hls-use-mpegts', '--concurrent-fragments', '4');
+  }
+
+  args.push('-o', '-', url);
+
+  const startTimeoutMs = (isVkUrl(url) || isSoundCloudUrl(url)) ? 120_000 : 90_000;
 
   return new Promise((resolve, reject) => {
     const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -313,6 +350,29 @@ function streamWithYtdlp(url) {
       }
     });
   });
+}
+
+async function streamWithYtdlp(url) {
+  const attempts = getYtdlpStreamAttempts(url);
+  console.log('Стрим через yt-dlp...');
+
+  let lastError;
+  for (let i = 0; i < attempts.length; i++) {
+    const attempt = attempts[i];
+    try {
+      if (attempt.label !== 'default') {
+        console.log(`yt-dlp: пробуем «${attempt.label}»...`);
+      }
+      return await streamWithYtdlpOnce(url, attempt);
+    } catch (err) {
+      lastError = err;
+      const retryable = /format is not available|no formats found|video unavailable/i.test(err.message);
+      if (!retryable || i === attempts.length - 1) break;
+      console.warn(`yt-dlp (${attempt.label}): не вышло, следующая попытка...`);
+    }
+  }
+
+  throw lastError;
 }
 
 async function getAudioStream(url) {
@@ -407,6 +467,12 @@ client.once('ready', () => {
     console.error('⚠️ ffmpeg НЕ НАЙДЕН! Выполните: apt install -y ffmpeg');
   } else {
     console.log(`ffmpeg: ${ff}`);
+  }
+  if (YOUTUBE_COOKIES_FILE) {
+    const ok = existsSync(YOUTUBE_COOKIES_FILE);
+    console.log(`YouTube cookies: ${YOUTUBE_COOKIES_FILE} ${ok ? '✓' : '⚠️ ФАЙЛ НЕ НАЙДЕН'}`);
+  } else {
+    console.warn('⚠️ YOUTUBE_COOKIES_FILE не задан в .env');
   }
 });
 
