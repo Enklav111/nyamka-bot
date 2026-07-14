@@ -49,6 +49,10 @@ function isVkUrl(url) {
   return /(?:^https?:\/\/)?(?:[\w-]+\.)?vk(?:video)?\.(?:com|ru)\//i.test(url);
 }
 
+function isSpotifyUrl(url) {
+  return /open\.spotify\.com\/(track|album|playlist)|spotify:/i.test(url);
+}
+
 function isVkPlaylistUrl(url) {
   return /\/music\/playlist\//i.test(url)
     || /\/audios-/i.test(url)
@@ -65,7 +69,7 @@ function getCookiesFile(url) {
   return null;
 }
 
-function buildYtdlpArgs(url) {
+function buildYtdlpBaseArgs(url) {
   const args = [];
 
   const cookies = getCookiesFile(url);
@@ -82,9 +86,7 @@ function buildYtdlpArgs(url) {
     args.push('--ffmpeg-location', ffmpegPath);
   }
 
-  // VK и др. часто отдают HLS — в pipe напрямую ломается (Broken pipe).
-  // Перекодируем в opus-поток через ffmpeg, без сохранения файла на диск.
-  args.push('-f', 'bestaudio/best', '-x', '--audio-format', 'opus', '-o', '-', '--no-warnings');
+  args.push('--no-warnings');
 
   if (isVkPlaylistUrl(url)) {
     args.push('--playlist-items', '1');
@@ -92,7 +94,6 @@ function buildYtdlpArgs(url) {
     args.push('--no-playlist');
   }
 
-  args.push(url);
   return args;
 }
 
@@ -101,12 +102,10 @@ function stopStream() {
   streamCleanup = () => {};
 }
 
-function streamWithYtdlp(url) {
-  const args = buildYtdlpArgs(url);
-  const startTimeoutMs = isVkUrl(url) ? 45_000 : 25_000;
-
+function runProcess(cmd, args, { timeoutMs = 60_000, label = cmd } = {}) {
   return new Promise((resolve, reject) => {
-    const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
     let stderr = '';
     let settled = false;
 
@@ -117,57 +116,184 @@ function streamWithYtdlp(url) {
       reject(new Error(message));
     };
 
+    const timer = setTimeout(() => {
+      fail(`${label}: таймаут`);
+    }, timeoutMs);
+
+    proc.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+    });
+
     proc.stderr.on('data', (chunk) => {
       const text = chunk.toString();
       stderr += text;
-      console.error('yt-dlp:', text.trim());
-      if (/ERROR:/i.test(text) && !/Broken pipe/i.test(text)) {
-        fail(text.trim());
-      }
+      const line = text.trim();
+      if (line) console.error(`${label}:`, line);
     });
 
     proc.on('error', (err) => {
+      clearTimeout(timer);
       if (err.code === 'ENOENT') {
-        fail('yt-dlp не найден. См. «Инструкция для VPS.md» — установка актуальной версии');
+        fail(`${label} не найден`);
         return;
       }
       fail(err.message);
     });
 
-    proc.on('spawn', () => {
-      const timeout = setTimeout(() => {
-        fail('yt-dlp: таймаут — аудиопоток не начался');
-      }, startTimeoutMs);
-
-      proc.stdout.once('data', () => {
-        clearTimeout(timeout);
-        if (settled) return;
-        settled = true;
-        resolve({
-          stream: proc.stdout,
-          inputType: StreamType.Arbitrary,
-          cleanup: () => {
-            if (!proc.killed) proc.kill('SIGTERM');
-          },
-        });
-      });
-
-      proc.on('close', (code) => {
-        clearTimeout(timeout);
-        if (!settled && code !== 0) {
-          fail(stderr.trim() || `yt-dlp завершился с кодом ${code}`);
-        }
-      });
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      if (settled) return;
+      settled = true;
+      if (code === 0) {
+        resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
+        return;
+      }
+      fail(stderr.trim() || `${label} завершился с кодом ${code}`);
     });
   });
 }
 
-async function getAudioStream(url) {
-  if (usesYtdlp(url)) {
-    return streamWithYtdlp(url);
+async function ytdlpGetDirectUrl(url) {
+  const args = [...buildYtdlpBaseArgs(url), '-g', '-f', 'bestaudio/best', url];
+  const timeoutMs = isVkUrl(url) ? 90_000 : 45_000;
+  const { stdout } = await runProcess('yt-dlp', args, { timeoutMs, label: 'yt-dlp' });
+  const directUrl = stdout.split('\n').find((line) => line.startsWith('http'));
+  if (!directUrl) {
+    throw new Error('yt-dlp: не удалось получить прямую ссылку на аудио');
+  }
+  return directUrl;
+}
+
+function streamWithFfmpeg(directUrl, { referer } = {}) {
+  if (!ffmpegPath) {
+    return Promise.reject(new Error('ffmpeg не найден (ffmpeg-static)'));
   }
 
-  const streamInfo = await playdl.stream(url);
+  const args = [
+    '-nostdin',
+    '-loglevel', 'error',
+    '-reconnect', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
+  ];
+
+  if (referer) {
+    args.push(
+      '-user_agent', YTDLP_USER_AGENT,
+      '-headers', `Referer: ${referer}\r\n`,
+    );
+  }
+
+  args.push(
+    '-i', directUrl,
+    '-vn',
+    '-acodec', 'libopus',
+    '-b:a', '96k',
+    '-f', 'opus',
+    'pipe:1',
+  );
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn(ffmpegPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    let settled = false;
+
+    const fail = (message) => {
+      if (settled) return;
+      settled = true;
+      if (!proc.killed) proc.kill('SIGTERM');
+      reject(new Error(message));
+    };
+
+    const timeout = setTimeout(() => {
+      fail('ffmpeg: таймаут — аудиопоток не начался');
+    }, 30_000);
+
+    proc.stderr.on('data', (chunk) => {
+      const text = chunk.toString().trim();
+      stderr += text;
+      if (text) console.error('ffmpeg:', text);
+    });
+
+    proc.on('error', (err) => fail(err.message));
+
+    proc.stdout.once('data', () => {
+      clearTimeout(timeout);
+      if (settled) return;
+      settled = true;
+      resolve({
+        stream: proc.stdout,
+        inputType: StreamType.OggOpus,
+        cleanup: () => {
+          if (!proc.killed) proc.kill('SIGTERM');
+        },
+      });
+    });
+
+    proc.on('close', (code) => {
+      clearTimeout(timeout);
+      if (!settled && code !== 0) {
+        fail(stderr.trim() || `ffmpeg завершился с кодом ${code}`);
+      }
+    });
+  });
+}
+
+async function streamWithYtdlp(url) {
+  console.log('Получаем прямую ссылку через yt-dlp...');
+  const directUrl = await ytdlpGetDirectUrl(url);
+  console.log('Запускаем ffmpeg-поток...');
+  return streamWithFfmpeg(directUrl, isVkUrl(url) ? { referer: 'https://vk.com/' } : {});
+}
+
+async function resolveSpotifyUrl(url) {
+  const meta = await playdl.spotify(url);
+
+  if (meta.type !== 'track') {
+    throw new Error('Spotify: поддерживается только ссылка на один трек (не альбом/плейлист)');
+  }
+
+  const artist = meta.artists?.[0]?.name || meta.subtitle || '';
+  const query = `${meta.name} ${artist}`.trim();
+  console.log(`Spotify → ищем: ${query}`);
+
+  try {
+    const scResults = await playdl.search(query, {
+      limit: 5,
+      source: { soundcloud: 'tracks' },
+    });
+    if (scResults[0]?.url) {
+      console.log(`Найдено на SoundCloud: ${scResults[0].url}`);
+      return scResults[0].url;
+    }
+  } catch (e) {
+    console.error('Поиск SoundCloud:', e.message);
+  }
+
+  const ytResults = await playdl.search(query, { limit: 3 });
+  if (ytResults[0]?.url) {
+    console.log(`Найдено на YouTube: ${ytResults[0].url}`);
+    return ytResults[0].url;
+  }
+
+  throw new Error(`Spotify: не нашли трек «${query}» на SoundCloud или YouTube`);
+}
+
+async function resolvePlaybackUrl(url) {
+  if (isSpotifyUrl(url)) {
+    return resolveSpotifyUrl(url);
+  }
+  return url;
+}
+
+async function getAudioStream(url) {
+  const playbackUrl = await resolvePlaybackUrl(url);
+
+  if (usesYtdlp(playbackUrl)) {
+    return streamWithYtdlp(playbackUrl);
+  }
+
+  const streamInfo = await playdl.stream(playbackUrl);
   return {
     stream: streamInfo.stream,
     inputType: streamInfo.type,
@@ -240,7 +366,7 @@ async function playNext(guild) {
     stopStream();
     isPlaying = false;
     try {
-      await playedChannel.send(`⚠️ Не удалось воспроизвести: ${item.url}`);
+      await playedChannel.send(`⚠️ Не удалось воспроизвести: ${item.url}\n${err.message}`);
     } catch (e) {}
     playNext(guild);
   }
