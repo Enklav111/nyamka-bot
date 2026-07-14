@@ -63,26 +63,56 @@ function streamWithYtdlp(url) {
 
   return new Promise((resolve, reject) => {
     const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    let settled = false;
+
+    const fail = (message) => {
+      if (settled) return;
+      settled = true;
+      if (!proc.killed) proc.kill('SIGTERM');
+      reject(new Error(message));
+    };
 
     proc.stderr.on('data', (chunk) => {
-      console.error('yt-dlp:', chunk.toString().trim());
+      const text = chunk.toString();
+      stderr += text;
+      console.error('yt-dlp:', text.trim());
+      if (/ERROR:/i.test(text)) {
+        fail(text.trim());
+      }
     });
 
     proc.on('error', (err) => {
       if (err.code === 'ENOENT') {
-        reject(new Error('yt-dlp не найден. Установите: apt install -y yt-dlp'));
+        fail('yt-dlp не найден. См. «Инструкция для VPS.md» — установка актуальной версии');
         return;
       }
-      reject(err);
+      fail(err.message);
     });
 
     proc.on('spawn', () => {
-      resolve({
-        stream: proc.stdout,
-        inputType: StreamType.Arbitrary,
-        cleanup: () => {
-          if (!proc.killed) proc.kill('SIGTERM');
-        },
+      const timeout = setTimeout(() => {
+        fail('yt-dlp: таймаут — аудиопоток не начался');
+      }, 20_000);
+
+      proc.stdout.once('data', () => {
+        clearTimeout(timeout);
+        if (settled) return;
+        settled = true;
+        resolve({
+          stream: proc.stdout,
+          inputType: StreamType.Arbitrary,
+          cleanup: () => {
+            if (!proc.killed) proc.kill('SIGTERM');
+          },
+        });
+      });
+
+      proc.on('close', (code) => {
+        clearTimeout(timeout);
+        if (!settled && code !== 0) {
+          fail(stderr.trim() || `yt-dlp завершился с кодом ${code}`);
+        }
       });
     });
   });
