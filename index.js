@@ -18,9 +18,12 @@ const {
   LINKS_CHANNEL_ID,
   PLAYED_CHANNEL_ID,
   YOUTUBE_COOKIES_FILE,
+  VK_COOKIES_FILE,
 } = process.env;
 
 const URL_REGEX = /(https?:\/\/[^\s]+)/i;
+const YTDLP_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 const client = new Client({
   intents: [
@@ -41,25 +44,58 @@ function isYoutubeUrl(url) {
   return /(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(url);
 }
 
+function isVkUrl(url) {
+  return /(?:^https?:\/\/)?(?:[\w-]+\.)?vk(?:video)?\.(?:com|ru)\//i.test(url);
+}
+
+function isVkPlaylistUrl(url) {
+  return /\/music\/playlist\//i.test(url)
+    || /\/audios-/i.test(url)
+    || /[?&]z=audio_playlist/i.test(url);
+}
+
+function usesYtdlp(url) {
+  return isYoutubeUrl(url) || isVkUrl(url);
+}
+
+function getCookiesFile(url) {
+  if (isVkUrl(url) && VK_COOKIES_FILE) return VK_COOKIES_FILE;
+  if (isYoutubeUrl(url) && YOUTUBE_COOKIES_FILE) return YOUTUBE_COOKIES_FILE;
+  return null;
+}
+
+function buildYtdlpArgs(url) {
+  const args = [];
+
+  const cookies = getCookiesFile(url);
+  if (cookies) {
+    args.push('--cookies', cookies);
+  }
+
+  if (isVkUrl(url)) {
+    args.push('--user-agent', YTDLP_USER_AGENT);
+    args.push('--referer', 'https://vk.com/');
+  }
+
+  args.push('-f', 'bestaudio/best', '-o', '-', '--no-warnings');
+
+  if (isVkPlaylistUrl(url)) {
+    args.push('--playlist-items', '1');
+  } else {
+    args.push('--no-playlist');
+  }
+
+  args.push(url);
+  return args;
+}
+
 function stopStream() {
   streamCleanup();
   streamCleanup = () => {};
 }
 
 function streamWithYtdlp(url) {
-  const args = [
-    '-f', 'bestaudio/best',
-    '-o', '-',
-    '--no-playlist',
-    '--no-warnings',
-    '--no-call-home',
-    url,
-  ];
-
-  if (YOUTUBE_COOKIES_FILE) {
-    args.unshift(YOUTUBE_COOKIES_FILE);
-    args.unshift('--cookies');
-  }
+  const args = buildYtdlpArgs(url);
 
   return new Promise((resolve, reject) => {
     const proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -119,7 +155,7 @@ function streamWithYtdlp(url) {
 }
 
 async function getAudioStream(url) {
-  if (isYoutubeUrl(url)) {
+  if (usesYtdlp(url)) {
     return streamWithYtdlp(url);
   }
 
