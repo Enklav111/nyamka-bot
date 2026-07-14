@@ -112,6 +112,15 @@ npm start
 
 ## 6. Запуск 24/7 через PM2
 
+pm2 start npm --name nyamka -- start
+Фоновый запуск 24/7
+
+pm2 stop nyamka
+Остановка
+
+pm2 restart nyamka
+Перезапуск
+
 ```bash
 npm install -g pm2
 cd /opt/nyamka-bot

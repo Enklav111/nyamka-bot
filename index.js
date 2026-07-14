@@ -39,6 +39,131 @@ const player = createAudioPlayer();
 let connection = null;
 let isPlaying = false;
 let streamCleanup = () => {};
+let currentLoadId = 0;
+let currentTrack = null;
+
+const BOT_COMMANDS = {
+  skip: ['!skip', '!s', '!скип', '!пропустить'],
+  stop: ['!stop', '!стоп'],
+  queue: ['!queue', '!q', '!очередь'],
+  np: ['!np', '!now', '!сейчас'],
+  help: ['!help', '!h', '!команды', '!помощь'],
+};
+
+function isCommandChannel(channelId) {
+  return channelId === LINKS_CHANNEL_ID || channelId === PLAYED_CHANNEL_ID;
+}
+
+function parseCommand(content) {
+  const token = content.trim().toLowerCase().split(/\s+/)[0];
+  for (const [name, aliases] of Object.entries(BOT_COMMANDS)) {
+    if (aliases.includes(token)) return name;
+  }
+  return null;
+}
+
+function getHelpText() {
+  return [
+    '**Команды НямКи:**',
+    '`!skip` — пропустить текущий трек',
+    '`!stop` — остановить и очистить очередь',
+    '`!queue` — показать очередь',
+    '`!np` — что сейчас играет',
+    '`!help` — этот список',
+    '',
+    'Ссылку на трек кидай в канал ссылок — бот сам поставит в очередь.',
+  ].join('\n');
+}
+
+function skipCurrent(guild) {
+  stopStream();
+
+  if (!isPlaying && !currentTrack && queue.length === 0) {
+    return 'Сейчас ничего не играет.';
+  }
+
+  const isAudible = player.state.status === AudioPlayerStatus.Playing
+    || player.state.status === AudioPlayerStatus.Buffering;
+
+  if (isAudible) {
+    isPlaying = false;
+    currentTrack = null;
+    player.stop();
+    return 'Пропускаю...';
+  }
+
+  currentLoadId += 1;
+  isPlaying = false;
+  currentTrack = null;
+  playNext(guild);
+  return 'Пропускаю...';
+}
+
+function stopAll() {
+  currentLoadId += 1;
+  queue.length = 0;
+  stopStream();
+  isPlaying = false;
+  currentTrack = null;
+
+  if (player.state.status !== AudioPlayerStatus.Idle) {
+    player.stop();
+  }
+
+  if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
+    connection.destroy();
+    connection = null;
+  }
+
+  return 'Остановлено, очередь очищена.';
+}
+
+function formatQueue() {
+  const lines = [];
+  if (currentTrack) {
+    lines.push(`**Сейчас:** ${currentTrack.url} (${currentTrack.authorTag})`);
+  }
+  if (queue.length === 0) {
+    lines.push(currentTrack ? '**Дальше:** очередь пуста' : 'Очередь пуста.');
+  } else {
+    lines.push('**Дальше:**');
+    queue.forEach((item, i) => {
+      lines.push(`${i + 1}. ${item.url} — ${item.authorTag}`);
+    });
+  }
+  return lines.join('\n');
+}
+
+async function handleCommand(message, command) {
+  let reply;
+  switch (command) {
+    case 'skip':
+      reply = skipCurrent(message.guild);
+      break;
+    case 'stop':
+      reply = stopAll();
+      break;
+    case 'queue':
+      reply = formatQueue();
+      break;
+    case 'np':
+      reply = currentTrack
+        ? `▶️ Сейчас играет: ${currentTrack.url}\nДобавил: ${currentTrack.authorTag}`
+        : 'Сейчас ничего не играет.';
+      break;
+    case 'help':
+      reply = getHelpText();
+      break;
+    default:
+      return;
+  }
+
+  await message.reply(reply);
+
+  if (message.channel.id === LINKS_CHANNEL_ID) {
+    try { await message.delete(); } catch (e) {}
+  }
+}
 
 function getFfmpegPath() {
   for (const p of ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg']) {
@@ -466,6 +591,7 @@ async function playNext(guild) {
   const item = queue.shift();
   if (!item) return;
   isPlaying = true;
+  const loadId = currentLoadId;
 
   const linksChannel = await client.channels.fetch(LINKS_CHANNEL_ID);
   const playedChannel = await client.channels.fetch(PLAYED_CHANNEL_ID);
@@ -481,8 +607,13 @@ async function playNext(guild) {
     const nowPlayingMsg = await playedChannel.send(
       `▶️ Сейчас играет: ${item.url}\nДобавил: ${item.authorTag}`,
     );
+    currentTrack = { url: item.url, authorTag: item.authorTag, nowPlayingMsg };
 
     const { stream, inputType, cleanup } = await getAudioStream(item.url);
+    if (loadId !== currentLoadId) {
+      cleanup();
+      return;
+    }
     streamCleanup = cleanup;
 
     const resource = createAudioResource(stream, { inputType });
@@ -491,6 +622,7 @@ async function playNext(guild) {
     player.once(AudioPlayerStatus.Idle, async () => {
       stopStream();
       isPlaying = false;
+      currentTrack = null;
       try {
         await nowPlayingMsg.edit(`✅ Отыграно: ${item.url}\nДобавил: ${item.authorTag}`);
       } catch (e) {}
@@ -501,15 +633,18 @@ async function playNext(guild) {
       console.error('Ошибка воспроизведения:', err);
       stopStream();
       isPlaying = false;
+      currentTrack = null;
       try {
         await nowPlayingMsg.edit(`⚠️ Не удалось воспроизвести: ${item.url}`);
       } catch (e) {}
       playNext(guild);
     });
   } catch (err) {
+    if (loadId !== currentLoadId) return;
     console.error('Ошибка при обработке ссылки:', err);
     stopStream();
     isPlaying = false;
+    currentTrack = null;
     try {
       await playedChannel.send(`⚠️ Не удалось воспроизвести: ${item.url}\n${err.message}`);
     } catch (e) {}
@@ -540,6 +675,19 @@ client.once('ready', () => {
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
+
+  if (isCommandChannel(message.channel.id)) {
+    const command = parseCommand(message.content);
+    if (command) {
+      try {
+        await handleCommand(message, command);
+      } catch (e) {
+        console.error('Ошибка команды:', e);
+      }
+      return;
+    }
+  }
+
   if (message.channel.id !== LINKS_CHANNEL_ID) return;
 
   const match = message.content.match(URL_REGEX);
