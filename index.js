@@ -137,13 +137,14 @@ function getYtdlpStreamAttempts(url) {
     }];
   }
 
-  // yt-dlp wiki: mweb + PO Token (bgutil) — основной путь; cookies только для age-restricted
+  // VPS-IP часто требует cookies; bgutil+mweb — для PO Token
   return [
+    { label: 'mweb+cookies', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb', hlsMpegts: true },
+    { label: 'mweb+cookies+missing_pot', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb;formats=missing_pot', hlsMpegts: true },
+    { label: 'web_safari+m3u8', format: 'bestaudio[protocol*=m3u8]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_safari', hlsMpegts: true },
+    { label: 'web_creator+cookies', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_creator', hlsMpegts: true },
     { label: 'mweb+bgutil', format: 'bestaudio/best/worst', useCookies: false, youtubeExtractorArgs: 'youtube:player_client=mweb', hlsMpegts: true },
     { label: 'android_vr', format: 'bestaudio/best/worst', useCookies: false, youtubeExtractorArgs: 'youtube:player_client=android_vr', hlsMpegts: true },
-    { label: 'mweb+cookies', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb', hlsMpegts: true },
-    { label: 'mweb+missing_pot', format: 'bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb;formats=missing_pot', hlsMpegts: true },
-    { label: 'web_safari+m3u8', format: 'bestaudio[protocol*=m3u8]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_safari', hlsMpegts: true },
     { label: 'best_any', format: 'best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb;formats=missing_pot', hlsMpegts: true },
   ];
 }
@@ -395,13 +396,11 @@ async function streamWithYtdlp(url) {
   for (let i = 0; i < attempts.length; i++) {
     const attempt = attempts[i];
     try {
-      if (attempt.label !== 'default') {
-        console.log(`yt-dlp: пробуем «${attempt.label}»...`);
-      }
+      console.log(`yt-dlp: попытка «${attempt.label}»...`);
       return await streamWithYtdlpOnce(url, attempt);
     } catch (err) {
       lastError = err;
-      const retryable = /format is not available|no formats found|video unavailable/i.test(err.message);
+      const retryable = /format is not available|no formats found|video unavailable|sign in to confirm|not a bot|bot check|playability status: error/i.test(err.message);
       if (!retryable || i === attempts.length - 1) break;
       console.warn(`yt-dlp (${attempt.label}): не вышло, следующая попытка...`);
     }
