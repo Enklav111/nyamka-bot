@@ -50,6 +50,8 @@ const BOT_COMMANDS = {
   help: ['!help', '!h', '!команды', '!помощь'],
 };
 
+const HELP_MESSAGE_MARKER = '▸ nyamka-help';
+
 function isCommandChannel(channelId) {
   return channelId === LINKS_CHANNEL_ID || channelId === PLAYED_CHANNEL_ID;
 }
@@ -64,15 +66,55 @@ function parseCommand(content) {
 
 function getHelpText() {
   return [
-    '**Команды НямКи:**',
+    '📌 **Команды НямКи**',
+    '',
     '`!skip` — пропустить текущий трек',
     '`!stop` — остановить и очистить очередь',
     '`!queue` — показать очередь',
     '`!np` — что сейчас играет',
     '`!help` — этот список',
     '',
-    'Ссылку на трек кидай в канал ссылок — бот сам поставит в очередь.',
+    '**Как добавить трек:** кинь ссылку YouTube / VK / SoundCloud / Spotify (трек) в этот канал.',
+    '',
+    HELP_MESSAGE_MARKER,
   ].join('\n');
+}
+
+function isHelpMessage(message) {
+  return message.author?.id === client.user?.id
+    && message.content.includes(HELP_MESSAGE_MARKER);
+}
+
+async function ensurePinnedHelpMessage() {
+  if (!LINKS_CHANNEL_ID) return;
+
+  try {
+    const channel = await client.channels.fetch(LINKS_CHANNEL_ID);
+    if (!channel?.isTextBased()) return;
+
+    const helpText = getHelpText();
+    const pins = await channel.messages.fetchPinned();
+    let helpMsg = pins.find(isHelpMessage);
+
+    if (!helpMsg) {
+      const recent = await channel.messages.fetch({ limit: 50 });
+      helpMsg = recent.find(isHelpMessage);
+    }
+
+    if (helpMsg) {
+      if (helpMsg.content !== helpText) await helpMsg.edit(helpText);
+      if (!helpMsg.pinned) await helpMsg.pin();
+      console.log('Справка: закреплена в канале ссылок');
+      return;
+    }
+
+    const sent = await channel.send(helpText);
+    await sent.pin();
+    console.log('Справка: отправлена и закреплена в канале ссылок');
+  } catch (err) {
+    console.error('Не удалось закрепить справку:', err.message);
+    console.error('Дай боту права: Send Messages, Manage Messages, Read Message History');
+  }
 }
 
 function skipCurrent(guild) {
@@ -652,7 +694,7 @@ async function playNext(guild) {
   }
 }
 
-client.once('ready', () => {
+client.once('ready', async () => {
   const ff = getFfmpegPath();
   console.log(`Бот запущен как ${client.user.tag}`);
   if (!ff) {
@@ -671,6 +713,8 @@ client.once('ready', () => {
   if (deno) console.log(`JS runtime для yt-dlp: deno (${deno})`);
   else if (node) console.log(`JS runtime для yt-dlp: node (${node})`);
   else console.warn('⚠️ JS runtime для yt-dlp не найден — выполните: apt install -y unzip && curl -fsSL https://deno.land/install.sh | sh');
+
+  await ensurePinnedHelpMessage();
 });
 
 client.on('messageCreate', async (message) => {
