@@ -47,10 +47,15 @@ const BOT_COMMANDS = {
   stop: ['!stop', '!стоп'],
   queue: ['!queue', '!q', '!очередь'],
   np: ['!np', '!now', '!сейчас'],
+  clear: ['!clear', '!очистить', '!cls'],
   help: ['!help', '!h', '!команды', '!помощь'],
 };
 
 const HELP_MESSAGE_MARKER = '▸ nyamka-help';
+const IDLE_LEAVE_MS = 10 * 60 * 1000;
+
+let idleTimer = null;
+let idleGuild = null;
 
 function isCommandChannel(channelId) {
   return channelId === LINKS_CHANNEL_ID || channelId === PLAYED_CHANNEL_ID;
@@ -72,9 +77,12 @@ function getHelpText() {
     '`!stop` — остановить и очистить очередь',
     '`!queue` — показать очередь',
     '`!np` — что сейчас играет',
+    '`!clear` — очистить уведомления в этом канале',
     '`!help` — этот список',
     '',
     '**Как добавить трек:** кинь ссылку YouTube / VK / SoundCloud / Spotify (трек) в этот канал.',
+    '',
+    '_Если 10 минут ничего не играет — бот выходит из голосового и чистит уведомления._',
     '',
     HELP_MESSAGE_MARKER,
   ].join('\n');
@@ -83,6 +91,118 @@ function getHelpText() {
 function isHelpMessage(message) {
   return message.author?.id === client.user?.id
     && message.content.includes(HELP_MESSAGE_MARKER);
+}
+
+function isVoiceConnected() {
+  return connection && connection.state.status !== VoiceConnectionStatus.Destroyed;
+}
+
+function cancelIdleTimer() {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+  idleGuild = null;
+}
+
+function scheduleIdleLeave(guild) {
+  if (!guild || isPlaying || queue.length > 0 || currentTrack) return;
+  if (!isVoiceConnected()) return;
+
+  cancelIdleTimer();
+  idleGuild = guild;
+  idleTimer = setTimeout(() => onIdleLeave(), IDLE_LEAVE_MS);
+  console.log('Таймер бездействия: выход из голосового через 10 мин');
+}
+
+async function onIdleLeave() {
+  idleTimer = null;
+  const guild = idleGuild;
+  idleGuild = null;
+
+  if (!guild || isPlaying || queue.length > 0 || currentTrack) return;
+
+  console.log('10 мин без музыки — выхожу из голосового');
+  disconnectVoice(false);
+  await clearLinksChannelNotifications();
+}
+
+function disconnectVoice(clearQueue) {
+  cancelIdleTimer();
+
+  if (clearQueue) {
+    currentLoadId += 1;
+    queue.length = 0;
+    isPlaying = false;
+    currentTrack = null;
+    stopStream();
+    if (player.state.status !== AudioPlayerStatus.Idle) {
+      player.stop();
+    }
+  }
+
+  if (isVoiceConnected()) {
+    connection.destroy();
+    connection = null;
+  }
+}
+
+function shouldKeepLinksMessage(message) {
+  if (message.pinned) return true;
+  if (isHelpMessage(message)) return true;
+  return false;
+}
+
+async function clearLinksChannelNotifications() {
+  if (!LINKS_CHANNEL_ID) return 0;
+
+  try {
+    const channel = await client.channels.fetch(LINKS_CHANNEL_ID);
+    if (!channel?.isTextBased()) return 0;
+
+    let deleted = 0;
+    let before;
+
+    for (let pass = 0; pass < 10; pass++) {
+      const options = { limit: 100 };
+      if (before) options.before = before;
+
+      const messages = await channel.messages.fetch(options);
+      if (messages.size === 0) break;
+
+      const toDelete = messages.filter((msg) => !shouldKeepLinksMessage(msg));
+      if (toDelete.size > 0) {
+        const arr = [...toDelete.values()];
+        const twoWeeksAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+        const recent = arr.filter((m) => m.createdTimestamp > twoWeeksAgo);
+        const old = arr.filter((m) => m.createdTimestamp <= twoWeeksAgo);
+
+        if (recent.length === 1) {
+          await recent[0].delete();
+          deleted += 1;
+        } else if (recent.length > 1) {
+          const bulk = await channel.bulkDelete(recent, true);
+          deleted += bulk.size;
+        }
+
+        for (const msg of old) {
+          try {
+            await msg.delete();
+            deleted += 1;
+          } catch (e) {}
+        }
+      }
+
+      before = messages.last()?.id;
+      if (messages.size < 100) break;
+    }
+
+    console.log(`Канал ссылок: удалено сообщений — ${deleted}`);
+    return deleted;
+  } catch (err) {
+    console.error('Не удалось очистить канал ссылок:', err.message);
+    return 0;
+  }
 }
 
 async function ensurePinnedHelpMessage() {
@@ -118,6 +238,7 @@ async function ensurePinnedHelpMessage() {
 }
 
 function skipCurrent(guild) {
+  cancelIdleTimer();
   stopStream();
 
   if (!isPlaying && !currentTrack && queue.length === 0) {
@@ -141,22 +262,9 @@ function skipCurrent(guild) {
   return 'Пропускаю...';
 }
 
-function stopAll() {
-  currentLoadId += 1;
-  queue.length = 0;
-  stopStream();
-  isPlaying = false;
-  currentTrack = null;
-
-  if (player.state.status !== AudioPlayerStatus.Idle) {
-    player.stop();
-  }
-
-  if (connection && connection.state.status !== VoiceConnectionStatus.Destroyed) {
-    connection.destroy();
-    connection = null;
-  }
-
+async function stopAll(guild) {
+  disconnectVoice(true);
+  await clearLinksChannelNotifications();
   return 'Остановлено, очередь очищена.';
 }
 
@@ -183,7 +291,7 @@ async function handleCommand(message, command) {
       reply = skipCurrent(message.guild);
       break;
     case 'stop':
-      reply = stopAll();
+      reply = await stopAll(message.guild);
       break;
     case 'queue':
       reply = formatQueue();
@@ -193,6 +301,11 @@ async function handleCommand(message, command) {
         ? `▶️ Сейчас играет: ${currentTrack.url}\nДобавил: ${currentTrack.authorTag}`
         : 'Сейчас ничего не играет.';
       break;
+    case 'clear': {
+      const count = await clearLinksChannelNotifications();
+      reply = count > 0 ? `Очищено сообщений: ${count}.` : 'Нечего очищать.';
+      break;
+    }
     case 'help':
       reply = getHelpText();
       break;
@@ -200,10 +313,13 @@ async function handleCommand(message, command) {
       return;
   }
 
-  await message.reply(reply);
+  const botReply = await message.reply(reply);
 
   if (message.channel.id === LINKS_CHANNEL_ID) {
     try { await message.delete(); } catch (e) {}
+    setTimeout(async () => {
+      try { await botReply.delete(); } catch (e) {}
+    }, 5000);
   }
 }
 
@@ -631,7 +747,11 @@ async function ensureConnection(guild) {
 async function playNext(guild) {
   if (isPlaying) return;
   const item = queue.shift();
-  if (!item) return;
+  if (!item) {
+    scheduleIdleLeave(guild);
+    return;
+  }
+  cancelIdleTimer();
   isPlaying = true;
   const loadId = currentLoadId;
 
@@ -746,6 +866,7 @@ client.on('messageCreate', async (message) => {
     sourceMessageId: message.id,
   });
 
+  cancelIdleTimer();
   playNext(message.guild);
 });
 
