@@ -57,7 +57,10 @@ cd /opt
 git clone https://github.com/Enklav111/nyamka-bot.git
 cd nyamka-bot
 npm install
+git update-index --skip-worktree cookies-youtube.txt cookies-vk.txt 2>/dev/null
 ```
+
+> Строка `skip-worktree` — чтобы `git pull` не конфликтовал с cookies на сервере (раздел 7.1).
 
 ---
 
@@ -158,6 +161,48 @@ pm2 start nyamka
 
 Проверка: `pm2 logs nyamka --lines 30`
 
+### 7.1. Ошибка `git pull`: cookies-youtube.txt would be overwritten
+
+**Почему:** на VPS cookies обновляются через `!cookies` или scp, а файл **когда-то попал в GitHub**. Git видит локальные изменения и блокирует pull.
+
+**Сейчас (разово) — сохранить cookies и подтянуть код:**
+
+```bash
+cd /opt/nyamka-bot
+cp cookies-youtube.txt /tmp/cookies-youtube-backup.txt
+cp cookies-vk.txt /tmp/cookies-vk-backup.txt 2>/dev/null
+git stash push -m "cookies" -- cookies-youtube.txt cookies-vk.txt 2>/dev/null || true
+git pull
+cp /tmp/cookies-youtube-backup.txt cookies-youtube.txt
+cp /tmp/cookies-vk-backup.txt cookies-vk.txt 2>/dev/null
+chmod 600 cookies-youtube.txt cookies-vk.txt 2>/dev/null
+pm2 restart nyamka
+```
+
+**Навсегда на VPS — сказать git «не трогай cookies»:**
+
+Выполните **один раз** после clone/pull:
+
+```bash
+cd /opt/nyamka-bot
+git update-index --skip-worktree cookies-youtube.txt
+git update-index --skip-worktree cookies-vk.txt
+```
+
+После этого `git pull` **не будет** ругаться на cookies — git проигнорирует локальные изменения этих файлов.
+
+Проверка:
+
+```bash
+git ls-files -v | grep cookies
+```
+
+Должно быть `S cookies-youtube.txt` (буква **S** = skip-worktree).
+
+> Cookies и `.env` **никогда не коммитьте** в GitHub. На ПК они уже в `.gitignore`.  
+> Если cookies снова попали в репозиторий — удалите их из git на ПК:  
+> `git rm --cached cookies-youtube.txt cookies-vk.txt` → commit → push.
+
 ---
 
 ## 8. VPS упал / всё сломалось — установка заново
@@ -170,6 +215,7 @@ cd /opt
 git clone https://github.com/Enklav111/nyamka-bot.git
 cd nyamka-bot
 npm install
+git update-index --skip-worktree cookies-youtube.txt cookies-vk.txt 2>/dev/null
 nano .env
 ```
 
@@ -588,6 +634,7 @@ PuTTY → apt install ffmpeg → Node.js + yt-dlp_linux → git clone → npm in
 **Обновление кода:**
 ```
 pm2 stop → git pull → npm install → pm2 start
+(если pull ругается на cookies — раздел 7.1)
 ```
 
 **Обновление cookies YouTube (Discord):**

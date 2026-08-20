@@ -2,7 +2,7 @@ require('dotenv').config();
 const { spawn, execSync } = require('child_process');
 const { PassThrough } = require('stream');
 const { existsSync } = require('fs');
-const { writeFile, rename, copyFile, mkdir } = require('fs').promises;
+const { writeFile, rename, copyFile, mkdir, unlink } = require('fs').promises;
 const path = require('path');
 const { Client, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
 const {
@@ -61,6 +61,8 @@ const COOKIES_REPLY_DELETE_MS = 10_000;
 
 let idleTimer = null;
 let idleGuild = null;
+let cookiesWriteLock = Promise.resolve();
+const handledLinkMessageIds = new Set();
 
 function isCommandChannel(channelId) {
   return channelId === LINKS_CHANNEL_ID || channelId === PLAYED_CHANNEL_ID;
@@ -351,16 +353,30 @@ async function writeCookiesFile(targetPath, content) {
   const dir = path.dirname(targetPath);
   await mkdir(dir, { recursive: true });
 
-  const tmpPath = `${targetPath}.tmp`;
+  const tmpPath = path.join(
+    dir,
+    `.${path.basename(targetPath)}.${process.pid}.${Date.now()}.tmp`,
+  );
   const bakPath = `${targetPath}.bak`;
 
-  await writeFile(tmpPath, content, 'utf8');
+  try {
+    await writeFile(tmpPath, content, 'utf8');
 
-  if (existsSync(targetPath)) {
-    await copyFile(targetPath, bakPath);
+    if (existsSync(targetPath)) {
+      await copyFile(targetPath, bakPath);
+    }
+
+    await rename(tmpPath, targetPath);
+  } catch (err) {
+    try { await unlink(tmpPath); } catch (e) {}
+    throw err;
   }
+}
 
-  await rename(tmpPath, targetPath);
+function withCookiesWriteLock(fn) {
+  const run = cookiesWriteLock.then(fn, fn);
+  cookiesWriteLock = run.catch(() => {});
+  return run;
 }
 
 async function replyTransient(message, reply, deleteAfterMs = 5000) {
@@ -429,7 +445,7 @@ async function handleCookiesCommand(message) {
       return;
     }
 
-    await writeCookiesFile(targetPath, content);
+    await withCookiesWriteLock(() => writeCookiesFile(targetPath, content));
 
     const label = kind === 'vk' ? 'VK' : 'YouTube';
     console.log(`Cookies ${label} обновлены: ${targetPath} (${validation.lineCount} строк)`);
@@ -908,13 +924,16 @@ async function ensureConnection(guild) {
 
 async function playNext(guild) {
   if (isPlaying) return;
+
+  isPlaying = true;
   const item = queue.shift();
   if (!item) {
+    isPlaying = false;
     scheduleIdleLeave(guild);
     return;
   }
+
   cancelIdleTimer();
-  isPlaying = true;
   const loadId = currentLoadId;
 
   const linksChannel = await client.channels.fetch(LINKS_CHANNEL_ID);
@@ -1021,6 +1040,14 @@ client.on('messageCreate', async (message) => {
     try { await message.delete(); } catch (e) {}
     return;
   }
+
+  if (handledLinkMessageIds.has(message.id)) return;
+  handledLinkMessageIds.add(message.id);
+  if (handledLinkMessageIds.size > 500) {
+    handledLinkMessageIds.clear();
+  }
+
+  if (queue.some((entry) => entry.sourceMessageId === message.id)) return;
 
   queue.push({
     url: match[1],
