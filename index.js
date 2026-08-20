@@ -2,7 +2,9 @@ require('dotenv').config();
 const { spawn, execSync } = require('child_process');
 const { PassThrough } = require('stream');
 const { existsSync } = require('fs');
-const { Client, GatewayIntentBits } = require('discord.js');
+const { writeFile, rename, copyFile, mkdir } = require('fs').promises;
+const path = require('path');
+const { Client, GatewayIntentBits, PermissionFlagsBits } = require('discord.js');
 const {
   joinVoiceChannel,
   createAudioPlayer,
@@ -48,11 +50,14 @@ const BOT_COMMANDS = {
   queue: ['!queue', '!q', '!очередь'],
   np: ['!np', '!now', '!сейчас'],
   clear: ['!clear', '!очистить', '!cls'],
+  cookies: ['!cookies', '!cookie', '!куки', '!печеньки'],
   help: ['!help', '!h', '!команды', '!помощь'],
 };
 
 const HELP_MESSAGE_MARKER = '▸ nyamka-help';
 const IDLE_LEAVE_MS = 10 * 60 * 1000;
+const COOKIES_MAX_BYTES = 1024 * 1024;
+const COOKIES_REPLY_DELETE_MS = 10_000;
 
 let idleTimer = null;
 let idleGuild = null;
@@ -79,6 +84,8 @@ function getHelpText() {
     '`!np` — что сейчас играет',
     '`!clear` — очистить уведомления в этом канале',
     '`!help` — этот список',
+    '',
+    '**Админ:** `!cookies` + файл `.txt` — обновить YouTube cookies (`!cookies vk` — для VK).',
     '',
     '**Как добавить трек:** кинь ссылку YouTube / VK / SoundCloud / Spotify (трек) в этот канал.',
     '',
@@ -284,7 +291,156 @@ function formatQueue() {
   return lines.join('\n');
 }
 
+function getCookiesTargetPath(kind) {
+  if (kind === 'vk') {
+    if (!VK_COOKIES_FILE) return null;
+    return VK_COOKIES_FILE;
+  }
+  if (!YOUTUBE_COOKIES_FILE) return null;
+  return YOUTUBE_COOKIES_FILE;
+}
+
+function validateCookiesFile(content, kind) {
+  if (!content || Buffer.byteLength(content, 'utf8') > COOKIES_MAX_BYTES) {
+    return { ok: false, error: 'Файл пустой или больше 1 МБ.' };
+  }
+
+  const lines = content.split(/\r?\n/).filter((line) => line.trim() && !line.trim().startsWith('#'));
+  if (lines.length === 0) {
+    return { ok: false, error: 'Файл не содержит cookies.' };
+  }
+
+  const hasNetscapeHeader = /Netscape HTTP Cookie File|HTTP Cookie File/i.test(content);
+  const tabLines = lines.filter((line) => line.split('\t').length >= 6);
+  if (!hasNetscapeHeader && tabLines.length === 0) {
+    return {
+      ok: false,
+      error: 'Нужен формат Netscape (.txt из расширения Get cookies.txt LOCALLY).',
+    };
+  }
+
+  const domainPattern = kind === 'vk'
+    ? /vk\.(com|ru)/i
+    : /youtube\.com|google\.com/i;
+  if (!lines.some((line) => domainPattern.test(line))) {
+    return {
+      ok: false,
+      error: kind === 'vk'
+        ? 'В файле нет cookies для vk.com / vk.ru.'
+        : 'В файле нет cookies для youtube.com / google.com.',
+    };
+  }
+
+  return { ok: true, lineCount: lines.length };
+}
+
+async function writeCookiesFile(targetPath, content) {
+  const dir = path.dirname(targetPath);
+  await mkdir(dir, { recursive: true });
+
+  const tmpPath = `${targetPath}.tmp`;
+  const bakPath = `${targetPath}.bak`;
+
+  await writeFile(tmpPath, content, 'utf8');
+
+  if (existsSync(targetPath)) {
+    await copyFile(targetPath, bakPath);
+  }
+
+  await rename(tmpPath, targetPath);
+}
+
+async function replyTransient(message, reply, deleteAfterMs = 5000) {
+  const botReply = await message.reply(reply);
+
+  if (isCommandChannel(message.channel.id)) {
+    try { await message.delete(); } catch (e) {}
+    setTimeout(async () => {
+      try { await botReply.delete(); } catch (e) {}
+    }, deleteAfterMs);
+  }
+
+  return botReply;
+}
+
+async function handleCookiesCommand(message) {
+  if (!message.member?.permissions.has(PermissionFlagsBits.Administrator)) {
+    await replyTransient(message, 'Нет прав. Нужны права **Administrator**.', COOKIES_REPLY_DELETE_MS);
+    return;
+  }
+
+  const parts = message.content.trim().toLowerCase().split(/\s+/);
+  const kind = parts[1] === 'vk' ? 'vk' : 'youtube';
+  const targetPath = getCookiesTargetPath(kind);
+
+  if (!targetPath) {
+    const envName = kind === 'vk' ? 'VK_COOKIES_FILE' : 'YOUTUBE_COOKIES_FILE';
+    await replyTransient(
+      message,
+      `В \`.env\` не задан \`${envName}\`.`,
+      COOKIES_REPLY_DELETE_MS,
+    );
+    return;
+  }
+
+  const attachment = message.attachments.first();
+  if (!attachment) {
+    await replyTransient(
+      message,
+      `Прикрепите файл \`.txt\` с cookies.\nПример: \`!cookies\` + файл (YouTube) или \`!cookies vk\` + файл.`,
+      COOKIES_REPLY_DELETE_MS,
+    );
+    return;
+  }
+
+  if (!/\.txt$/i.test(attachment.name || '')) {
+    await replyTransient(message, 'Нужен текстовый файл `.txt`.', COOKIES_REPLY_DELETE_MS);
+    return;
+  }
+
+  if (attachment.size > COOKIES_MAX_BYTES) {
+    await replyTransient(message, 'Файл больше 1 МБ.', COOKIES_REPLY_DELETE_MS);
+    return;
+  }
+
+  try {
+    const response = await fetch(attachment.url);
+    if (!response.ok) {
+      throw new Error(`не удалось скачать вложение (${response.status})`);
+    }
+
+    const content = await response.text();
+    const validation = validateCookiesFile(content, kind);
+    if (!validation.ok) {
+      await replyTransient(message, validation.error, COOKIES_REPLY_DELETE_MS);
+      return;
+    }
+
+    await writeCookiesFile(targetPath, content);
+
+    const label = kind === 'vk' ? 'VK' : 'YouTube';
+    console.log(`Cookies ${label} обновлены: ${targetPath} (${validation.lineCount} строк)`);
+    await replyTransient(
+      message,
+      `✅ **${label} cookies** обновлены (${validation.lineCount} строк).\nФайл: \`${targetPath}\`\nСтарый сохранён как \`.bak\`.`,
+      COOKIES_REPLY_DELETE_MS,
+    );
+  } catch (err) {
+    console.error('Ошибка обновления cookies:', err);
+    await replyTransient(
+      message,
+      `Не удалось обновить cookies: ${err.message}`,
+      COOKIES_REPLY_DELETE_MS,
+    );
+  }
+}
+
 async function handleCommand(message, command) {
+  if (command === 'cookies') {
+    await handleCookiesCommand(message);
+    return;
+  }
+
   let reply;
   switch (command) {
     case 'skip':
@@ -313,14 +469,7 @@ async function handleCommand(message, command) {
       return;
   }
 
-  const botReply = await message.reply(reply);
-
-  if (message.channel.id === LINKS_CHANNEL_ID) {
-    try { await message.delete(); } catch (e) {}
-    setTimeout(async () => {
-      try { await botReply.delete(); } catch (e) {}
-    }, 5000);
-  }
+  await replyTransient(message, reply);
 }
 
 function getFfmpegPath() {

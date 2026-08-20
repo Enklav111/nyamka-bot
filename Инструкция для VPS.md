@@ -175,7 +175,7 @@ nano .env
 
 Вставьте те же переменные из сохранённой копии `.env`.
 
-Залейте `cookies-youtube.txt` заново (раздел 10).
+Залейте `cookies-youtube.txt` заново (раздел 10.2 — Discord `!cookies` или scp/WinSCP).
 
 ```bash
 chmod 600 .env
@@ -267,7 +267,20 @@ npm start
 
 ### 10.2. Залить cookies на сервер
 
-**Вариант А — PowerShell на ПК:**
+**Вариант А — команда в Discord (удобнее всего):**
+
+1. Экспортируйте `cookies-youtube.txt` на ПК (раздел 10.1)
+2. В Discord, в канале **ссылок** или **лога**, отправьте сообщение:
+   - `!cookies` — обновить YouTube cookies
+   - `!cookies vk` — обновить VK cookies
+3. **Прикрепите** файл `.txt` к этому сообщению (перетащите файл в поле ввода)
+4. Бот ответит `✅ YouTube cookies обновлены` и удалит сообщение с файлом через 10 секунд
+
+> **Важно:** команду может использовать только участник с правом **Administrator** на сервере.  
+> **Перезапуск бота не нужен** — новые cookies подхватятся со следующего трека.  
+> Старый файл сохраняется как `cookies-youtube.txt.bak` на сервере.
+
+**Вариант Б — PowerShell на ПК:**
 
 ```powershell
 scp C:\Users\Enklav111\Desktop\cookies-youtube.txt root@89.125.248.187:/opt/nyamka-bot/cookies-youtube.txt
@@ -275,7 +288,7 @@ scp C:\Users\Enklav111\Desktop\cookies-youtube.txt root@89.125.248.187:/opt/nyam
 
 Подставьте свой IP и путь к файлу.
 
-**Вариант Б — WinSCP:**
+**Вариант В — WinSCP:**
 
 1. Подключиться к серверу (IP, root, пароль)
 2. Перетащить `cookies-youtube.txt` в папку `/opt/nyamka-bot/`
@@ -322,12 +335,42 @@ npm start
 
 Симптомы: снова `⚠️ Не удалось воспроизвести` или ошибка `Sign in to confirm` в PuTTY.
 
-Что делать:
+**Быстрый способ (Discord):**
+
+1. Заново зайдите на **youtube.com** в браузере (на ПК)
+2. Экспортируйте свежий `cookies-youtube.txt` (раздел 10.1)
+3. В Discord: `!cookies` + прикрепите файл (раздел 10.2, вариант А)
+4. Киньте **новую** YouTube-ссылку в канал — перезапуск бота **не нужен**
+
+**Через сервер (scp / WinSCP):**
+
 1. Заново экспортировать `cookies-youtube.txt` с ПК
-2. Залить на сервер (заменить старый файл)
-3. `pm2 restart nyamka` или перезапустить `npm start`
+2. Залить на сервер (заменить старый файл) — раздел 10.2, варианты Б или В
+3. `pm2 restart nyamka` не обязателен, но можно для спокойствия
 
 > **Не заливайте** `cookies-*.txt` и `.env` в GitHub — там ваши секреты.
+
+### 10.7. Команда `!cookies` — справка
+
+| Команда | Что делает |
+|---------|------------|
+| `!cookies` | Заменить YouTube cookies (`YOUTUBE_COOKIES_FILE`) |
+| `!cookies vk` | Заменить VK cookies (`VK_COOKIES_FILE`) |
+| `!куки`, `!печеньки` | То же, что `!cookies` |
+
+**Требования:**
+- Право **Administrator** на Discord-сервере
+- Файл `.txt` в формате Netscape (расширение «Get cookies.txt LOCALLY»)
+- Размер до 1 МБ
+- В файле должны быть cookies для `youtube.com` / `google.com` (или `vk.com` для VK)
+
+**Что делает бот:**
+1. Скачивает вложение и проверяет формат
+2. Сохраняет старый файл как `.bak`
+3. Записывает новый файл по пути из `.env`
+4. Удаляет ваше сообщение с файлом и свой ответ через 10 секунд
+
+**Если ошибка «В `.env` не задан `YOUTUBE_COOKIES_FILE`»** — добавьте строку в `.env` (раздел 10.3) и перезапустите бота один раз.
 
 ---
 
@@ -357,6 +400,8 @@ npm start
 2. Зайдите на **vk.com** под своим аккаунтом
 3. Export → `cookies-vk.txt`
 4. Залить на сервер:
+   - **Discord:** `!cookies vk` + прикрепить файл (раздел 10.2)
+   - **или scp:**
 
 ```powershell
 scp C:\Users\Enklav111\Desktop\cookies-vk.txt root@89.125.248.187:/opt/nyamka-bot/cookies-vk.txt
@@ -446,12 +491,22 @@ PuTTY → apt install ffmpeg → Node.js + yt-dlp_linux → git clone → npm in
 pm2 stop → git pull → npm install → pm2 start
 ```
 
-**Обновление cookies YouTube:**
+**Обновление cookies YouTube (Discord):**
 ```
-экспорт с ПК → scp cookies-youtube.txt → pm2 restart nyamka
+экспорт с ПК → в Discord: !cookies + файл cookies-youtube.txt
 ```
 
-**Обновление cookies VK:**
+**Обновление cookies YouTube (scp):**
 ```
-экспорт с vk.com → scp cookies-vk.txt → pm2 restart nyamka
+экспорт с ПК → scp cookies-youtube.txt → (перезапуск не обязателен)
+```
+
+**Обновление cookies VK (Discord):**
+```
+экспорт с vk.com → в Discord: !cookies vk + файл cookies-vk.txt
+```
+
+**Обновление cookies VK (scp):**
+```
+экспорт с vk.com → scp cookies-vk.txt → (перезапуск не обязателен)
 ```
