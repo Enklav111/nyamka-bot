@@ -26,6 +26,8 @@ const {
 const URL_REGEX = /(https?:\/\/[^\s]+)/i;
 const YTDLP_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+const YTDLP_YOUTUBE_AUDIO_FORMAT =
+  'bestaudio[acodec!=none]/best[acodec!=none]/bestaudio/best/ba/b/worst';
 
 const client = new Client({
   intents: [
@@ -523,22 +525,9 @@ function getNodePath() {
   return null;
 }
 
-function getDenoPath() {
-  for (const p of ['/root/.deno/bin/deno', '/usr/bin/deno', '/usr/local/bin/deno']) {
-    if (existsSync(p)) return p;
-  }
-  try {
-    const p = execSync('which deno', { encoding: 'utf8' }).trim();
-    if (p && existsSync(p)) return p;
-  } catch (e) {}
-  return null;
-}
-
 function appendYoutubeRuntimeArgs(args) {
-  const deno = getDenoPath();
   const node = getNodePath();
-  if (deno) args.push('--js-runtimes', `deno:${deno}`);
-  else if (node) args.push('--js-runtimes', `node:${node}`);
+  if (node) args.push('--js-runtimes', `node:${node}`);
   args.push('--remote-components', 'ejs:github');
 }
 
@@ -583,7 +572,7 @@ function resolveCookiesPath(url, useCookies = true) {
 }
 
 function getYtdlpFormat(url) {
-  if (isYoutubeUrl(url)) return 'bestaudio[ext=webm]/bestaudio/best/worst';
+  if (isYoutubeUrl(url)) return YTDLP_YOUTUBE_AUDIO_FORMAT;
   if (isVkUrl(url)) return 'bestaudio[protocol^=http]/bestaudio/best';
   return 'bestaudio/best';
 }
@@ -599,15 +588,64 @@ function getYtdlpStreamAttempts(url) {
     }];
   }
 
-  // VPS-IP часто требует cookies; bgutil+mweb — для PO Token
+  // cookies + PoToken (bgutil) + JS runtime (node). web_safari m3u8 часто ломается с 2025+
   return [
-    { label: 'mweb+cookies', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb', hlsMpegts: true },
-    { label: 'mweb+cookies+missing_pot', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb;formats=missing_pot', hlsMpegts: true },
-    { label: 'web_safari+m3u8', format: 'bestaudio[protocol*=m3u8]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_safari', hlsMpegts: true },
-    { label: 'web_creator+cookies', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=web_creator', hlsMpegts: true },
-    { label: 'mweb+bgutil', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: false, youtubeExtractorArgs: 'youtube:player_client=mweb', hlsMpegts: true },
-    { label: 'android_vr', format: 'bestaudio[ext=webm]/bestaudio/best/worst', useCookies: false, youtubeExtractorArgs: 'youtube:player_client=android_vr', hlsMpegts: true },
-    { label: 'best_any', format: 'best/worst', useCookies: true, youtubeExtractorArgs: 'youtube:player_client=mweb;formats=missing_pot', hlsMpegts: true },
+    {
+      label: 'default+cookies',
+      format: YTDLP_YOUTUBE_AUDIO_FORMAT,
+      useCookies: true,
+      youtubeExtractorArgs: 'youtube:player_client=default,-web_safari',
+      hlsMpegts: false,
+    },
+    {
+      label: 'tv+cookies',
+      format: YTDLP_YOUTUBE_AUDIO_FORMAT,
+      useCookies: true,
+      youtubeExtractorArgs: 'youtube:player_client=tv',
+      hlsMpegts: false,
+    },
+    {
+      label: 'ios+cookies',
+      format: YTDLP_YOUTUBE_AUDIO_FORMAT,
+      useCookies: true,
+      youtubeExtractorArgs: 'youtube:player_client=ios',
+      hlsMpegts: false,
+    },
+    {
+      label: 'mweb+cookies',
+      format: YTDLP_YOUTUBE_AUDIO_FORMAT,
+      useCookies: true,
+      youtubeExtractorArgs: 'youtube:player_client=mweb',
+      hlsMpegts: true,
+    },
+    {
+      label: 'mweb+cookies+missing_pot',
+      format: YTDLP_YOUTUBE_AUDIO_FORMAT,
+      useCookies: true,
+      youtubeExtractorArgs: 'youtube:player_client=mweb;formats=missing_pot',
+      hlsMpegts: true,
+    },
+    {
+      label: 'mweb+bgutil',
+      format: YTDLP_YOUTUBE_AUDIO_FORMAT,
+      useCookies: false,
+      youtubeExtractorArgs: 'youtube:player_client=mweb',
+      hlsMpegts: true,
+    },
+    {
+      label: 'android_vr',
+      format: YTDLP_YOUTUBE_AUDIO_FORMAT,
+      useCookies: false,
+      youtubeExtractorArgs: 'youtube:player_client=android_vr',
+      hlsMpegts: true,
+    },
+    {
+      label: 'best_any+cookies',
+      format: 'ba/b/worst',
+      useCookies: true,
+      youtubeExtractorArgs: 'youtube:player_client=default,-web_safari;formats=missing_pot',
+      hlsMpegts: false,
+    },
   ];
 }
 
@@ -781,8 +819,7 @@ async function resolvePlaybackUrl(url) {
   return url;
 }
 
-function getStreamInputType(url) {
-  if (isYoutubeUrl(url)) return StreamType.WebmOpus;
+function getStreamInputType() {
   return StreamType.Arbitrary;
 }
 
@@ -819,7 +856,7 @@ function streamWithYtdlpOnce(url, attempt) {
       clearTimeout(timeout);
       resolve({
         stream: audioOut,
-        inputType: getStreamInputType(url),
+        inputType: getStreamInputType(),
         cleanup: () => {
           audioOut.destroy();
           if (!proc.killed) proc.kill('SIGTERM');
@@ -1009,11 +1046,9 @@ client.once('ready', async () => {
   } else {
     console.log('YouTube cookies: не заданы (для обычных видео достаточно bgutil+mweb)');
   }
-  const deno = getDenoPath();
   const node = getNodePath();
-  if (deno) console.log(`JS runtime для yt-dlp: deno (${deno})`);
-  else if (node) console.log(`JS runtime для yt-dlp: node (${node})`);
-  else console.warn('⚠️ JS runtime для yt-dlp не найден — выполните: apt install -y unzip && curl -fsSL https://deno.land/install.sh | sh');
+  if (node) console.log(`JS runtime для yt-dlp: node (${node})`);
+  else console.warn('⚠️ JS runtime для yt-dlp не найден — нужен node (/usr/bin/node)');
 
   await ensurePinnedHelpMessage();
 });

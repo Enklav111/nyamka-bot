@@ -26,8 +26,25 @@ npm start
 > Команды `apt update` и полное обновление системы **не выполняем**.  
 > Во время установки Node.js в фиолетовых окнах просто жмите **Enter** → **Tab** → **Enter**.
 
+### Что нужно боту
+
+| Компонент | Зачем | Раздел |
+|-----------|--------|--------|
+| **ffmpeg** | Воспроизведение VK, SoundCloud, Spotify, YouTube | 2.1 |
+| **Node.js 20** | Сам бот + JS runtime для yt-dlp | 2.1 |
+| **yt-dlp** (свежий бинарник) | Скачивание потоков | 2.1 |
+| **Docker + bgutil** | Po Token для YouTube на VPS (**обязательно**) | 2.2 |
+| **Плагин bgutil для yt-dlp** | Связка yt-dlp ↔ bgutil | 2.2 |
+| **cookies YouTube** | Запасной путь + приватные видео | 10.1 |
+| **PM2** | Работа 24/7 | 6 |
+
+> **YouTube на VPS без bgutil почти не работает** — IP серверов Google режет.  
+> Cookies одних мало: нужны **bgutil + плагин + node**.
+
+### 2.1. Базовое ПО
+
 ```bash
-apt install -y curl git build-essential
+apt install -y curl git build-essential unzip
 apt install -y ffmpeg
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
 apt install -y nodejs
@@ -37,16 +54,70 @@ apt remove -y yt-dlp 2>/dev/null; hash -r
 node -v && npm -v && yt-dlp --version && ffmpeg -version | head -1
 ```
 
-Должно показать Node.js `v20.x`, npm, **свежую** версию yt-dlp и **ffmpeg** (не «command not found»).
+Должно показать Node.js `v20.x`, npm, **свежую** версию yt-dlp (2025+) и **ffmpeg** (не «command not found»).
 
 > **Обязательно: ffmpeg** — без него бот **не играет** VK, SoundCloud и Spotify.  
-> Команда: `apt install -y ffmpeg`  
-> Проверка: `ffmpeg -version` → путь `/usr/bin/ffmpeg`  
-> При старте бота должно быть: `ffmpeg: /usr/bin/ffmpeg` (не предупреждение «НЕ НАЙДЕН»).
+> При старте бота должно быть: `ffmpeg: /usr/bin/ffmpeg`
 
-> **Важно:** нужен **системный ffmpeg** (`apt install ffmpeg`). Встроенный ffmpeg-static из npm на VPS иногда падает (SIGSEGV) на VK-потоках.  
-> Не скачивайте файл `yt-dlp` (скрипт) — на Ubuntu он может тянуть старый модуль.  
-> Нужен именно **`yt-dlp_linux`** (готовый бинарник).
+> **Важно:** нужен **системный ffmpeg** (`apt install ffmpeg`).  
+> Не скачивайте файл `yt-dlp` (скрипт) — нужен **`yt-dlp_linux`** (готовый бинарник).
+
+### 2.2. YouTube: Docker + bgutil + плагин (обязательно)
+
+**1. Docker и контейнер bgutil:**
+
+```bash
+apt install -y docker.io
+systemctl enable docker
+systemctl start docker
+
+docker run --name bgutil-provider -d --restart unless-stopped \
+  -p 127.0.0.1:4416:4416 \
+  brainicism/bgutil-ytdlp-pot-provider
+
+curl -s 127.0.0.1:4416/ping
+```
+
+`curl` должен **ответить** (не «НЕ ОТВЕЧАЕТ» / не пусто).
+
+**2. Плагин для yt-dlp** (скачать **и распаковать**):
+
+```bash
+mkdir -p ~/.config/yt-dlp/plugins
+cd ~/.config/yt-dlp/plugins
+curl -L -o bgutil-ytdlp-pot-provider.zip \
+  https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip
+unzip -o bgutil-ytdlp-pot-provider.zip
+ls ~/.config/yt-dlp/plugins/
+```
+
+**3. Проверка bgutil + yt-dlp:**
+
+```bash
+yt-dlp -v --simulate "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1 | grep -i pot
+```
+
+Должны быть строки про `bgutil` / `pot`.
+
+**4. Быстрая проверка всего стека:**
+
+```bash
+echo "=== ffmpeg ===" && ffmpeg -version | head -1
+echo "=== yt-dlp ===" && yt-dlp --version
+echo "=== node ===" && node -v
+echo "=== bgutil ===" && curl -s 127.0.0.1:4416/ping || echo "НЕ ОТВЕЧАЕТ"
+echo "=== plugin ===" && ls ~/.config/yt-dlp/plugins/ 2>&1
+```
+
+| Строка | Ожидание |
+|--------|----------|
+| ffmpeg | версия, не error |
+| yt-dlp | 2025+ (не 2024.08…) |
+| node | v20.x |
+| bgutil | ответ от ping |
+| plugin | файлы/папки в plugins |
+
+Подробнее про cookies и ошибки YouTube — разделы **10** и **10.8**.
 
 ---
 
@@ -343,8 +414,8 @@ pm2 save
 ## 10. YouTube: cookies (если bgutil не хватит)
 
 YouTube часто блокирует IP серверов (`Sign in to confirm you're not a bot`).  
-Сначала попробуйте **bgutil** (раздел 10a) — часто работает **без cookies**.  
-Cookies — запасной путь, если bgutil не помог или нужны приватные/возрастные видео.
+**Сначала** убедитесь, что установлен **bgutil** (раздел **2.2**).  
+Cookies — дополнительно, если bgutil не хватит или нужны приватные/возрастные видео.
 
 ### 10.0. Если забыли ffmpeg (бот пишет «ffmpeg НЕ НАЙДЕН»)
 
@@ -359,7 +430,9 @@ npm start
 
 ---
 
-### 10a. YouTube: bgutil (обход бот-чека без Google-аккаунта)
+### 10a. YouTube: bgutil (дополнительно / если сломалось)
+
+> Основная установка — **раздел 2.2**. Этот раздел — если bgutil уже был, но перестал работать после reboot.
 
 По мотивам [гайда про обход бот-чека](https://github.com/mikedigriz/YT/blob/main/docs/how-to/05-obhod-bot-cheka.md).
 
@@ -375,10 +448,13 @@ curl -s 127.0.0.1:4416/ping
 **2. Плагин для yt-dlp:**
 
 ```bash
+apt install -y unzip
 mkdir -p ~/.config/yt-dlp/plugins
 cd ~/.config/yt-dlp/plugins
 curl -L -o bgutil-ytdlp-pot-provider.zip \
   https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip
+unzip -o bgutil-ytdlp-pot-provider.zip
+ls ~/.config/yt-dlp/plugins/
 ```
 
 **3. Проверка:**
@@ -517,6 +593,64 @@ npm start
 
 **Если ошибка «В `.env` не задан `YOUTUBE_COOKIES_FILE`»** — добавьте строку в `.env` (раздел 10.3) и перезапустите бота один раз.
 
+### 10.8. `Requested format is not available` (cookies есть, но не играет)
+
+**Это не всегда проблема cookies.** В логах может быть:
+
+- `Requested format is not available` — с cookies, но YouTube отдаёт другие форматы (нужен свежий yt-dlp + bgutil)
+- `Sign in to confirm you're not a bot` — bgutil не работает / IP VPS в бане
+
+**Проверка на VPS по порядку:**
+
+```bash
+# 1. Свежий yt-dlp
+curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux -o /usr/local/bin/yt-dlp
+chmod a+rx /usr/local/bin/yt-dlp
+yt-dlp --version
+
+# 2. bgutil (Po Token) — контейнер должен отвечать
+curl -s 127.0.0.1:4416/ping
+docker ps | grep bgutil
+
+# 3. Плагин yt-dlp для bgutil (папка должна существовать!)
+ls -la ~/.config/yt-dlp/plugins/
+```
+
+Если `curl ...4416/ping` **не отвечает** — поднимите bgutil (раздел 10a):
+
+```bash
+apt install -y docker.io unzip
+systemctl enable docker && systemctl start docker
+
+docker start bgutil-provider 2>/dev/null || docker run --name bgutil-provider -d --restart unless-stopped \
+  -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+
+mkdir -p ~/.config/yt-dlp/plugins
+cd ~/.config/yt-dlp/plugins
+curl -L -o bgutil.zip \
+  https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest/download/bgutil-ytdlp-pot-provider.zip
+unzip -o bgutil.zip
+```
+
+**Ручная проверка до бота:**
+
+```bash
+yt-dlp --cookies /opt/nyamka-bot/cookies-youtube.txt \
+  --js-runtimes "node:/usr/bin/node" \
+  --remote-components ejs:github \
+  --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" \
+  --extractor-args "youtube:player_client=mweb" \
+  -f bestaudio/best -o - --no-playlist \
+  "https://www.youtube.com/watch?v=S_jBXqUzm8U" 2>&1 | head -15
+```
+
+| Результат | Что делать |
+|-----------|------------|
+| `Downloading...` без ERROR | `git pull` → `pm2 restart nyamka` |
+| `format is not available` | обновить yt-dlp + установить bgutil (раздел 10a) |
+| `Sign in to confirm` | bgutil + cookies, или сменить IP VPS / другой хостинг |
+| `429` | IP VPS заблокирован Google — cookies не помогут |
+
 ---
 
 ## 11. VK Видео и VK Музыка
@@ -624,11 +758,57 @@ ffmpeg -version | head -1
 
 ---
 
+## 15. Утилита автоустановки с ПК (папка `Setting`)
+
+Всё, что описано в разделах 2–7, можно делать **одной кнопкой с ПК** — без PuTTY и ручных команд.
+
+**Файлы** (папка `Setting` рядом с ботом):
+
+| Файл | Что это |
+|------|---------|
+| `NyamkaControl.bat` | Запуск утилиты (нужен Python на ПК) |
+| `nyamka-control.py` | Сама утилита |
+| `server.txt` | IP и пароль сервера (заполнить!) |
+| `.env` | Положите рядом — загрузится на сервер |
+| `cookies-youtube.txt` / `cookies-vk.txt` | Опционально — загрузятся на сервер |
+
+**`server.txt`** (логин всегда root, порт всегда 22):
+
+```
+ip-111.111.111.111:22
+login-root
+Password-ВАШ_ПАРОЛЬ
+```
+
+**Меню утилиты:**
+
+| Пункт | Действие |
+|-------|----------|
+| 1 | Статус: бот (установлен/работает), версии всех зависимостей, bgutil |
+| 2 | Логи бота (50 строк) |
+| 3–5 | pm2: старт / стоп / перезапуск |
+| 6 | **Полная установка**: ПО + bgutil + клон + npm + .env + pm2 |
+| 7 | Установить зависимости (бот не трогается) |
+| 8 | Git pull + перезапуск |
+| 9–10 | Загрузить .env / cookies |
+| 11 | Обновить компоненты (yt-dlp, bgutil, npm) |
+| 12–13 | Переустановить бота / зависимости |
+| 14–15 | Удалить бота / зависимости (с подтверждением `yes`) |
+
+> Удаление зависимостей (15) убирает **только** pm2, yt-dlp и bgutil.  
+> **Docker, Node.js и ffmpeg не трогаются** — их может использовать другое ПО на сервере (VPN и т.п.).
+
+**Требования на ПК:** Python 3 и PuTTY (утилита использует `plink.exe` / `pscp.exe`).
+
+> После пересоздания VPS через Vultr-скрипт: впишите новый IP и пароль в `server.txt` → пункт **6** — и бот готов.
+
+---
+
 ## Шпаргалка
 
 **Первая установка:**
 ```
-PuTTY → apt install ffmpeg → Node.js + yt-dlp_linux → git clone → npm install → bgutil (YouTube) → nano .env → npm start
+PuTTY → раздел 2.1 (ffmpeg, node, yt-dlp) → раздел 2.2 (docker, bgutil, плагин) → git clone → npm install → nano .env → cookies → pm2 start
 ```
 
 **Обновление кода:**
