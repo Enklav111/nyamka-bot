@@ -230,17 +230,30 @@ async function ensurePinnedHelpMessage() {
 
     if (helpMsg) {
       if (helpMsg.content !== helpText) await helpMsg.edit(helpText);
-      if (!helpMsg.pinned) await helpMsg.pin();
+      if (!helpMsg.pinned) {
+        try {
+          await helpMsg.pin();
+        } catch (pinErr) {
+          console.warn('Справка обновлена, но закрепить не удалось:', pinErr.message);
+          console.warn('Дай боту право Pin Messages (Закреплять сообщения) — с 2026 это отдельно от Manage Messages');
+          return;
+        }
+      }
       console.log('Справка: закреплена в канале ссылок');
       return;
     }
 
     const sent = await channel.send(helpText);
-    await sent.pin();
-    console.log('Справка: отправлена и закреплена в канале ссылок');
+    try {
+      await sent.pin();
+      console.log('Справка: отправлена и закреплена в канале ссылок');
+    } catch (pinErr) {
+      console.warn('Справка отправлена, но закрепить не удалось:', pinErr.message);
+      console.warn('Дай боту право Pin Messages (Закреплять сообщения) — с 2026 это отдельно от Manage Messages');
+    }
   } catch (err) {
-    console.error('Не удалось закрепить справку:', err.message);
-    console.error('Дай боту права: Send Messages, Manage Messages, Read Message History');
+    console.error('Не удалось отправить справку:', err.message);
+    console.error('Дай боту права: View Channel, Send Messages, Manage Messages, Read Message History, Pin Messages');
   }
 }
 
