@@ -33,6 +33,7 @@ npm start
 | **ffmpeg** | Воспроизведение VK, SoundCloud, Spotify, YouTube | 2.1 |
 | **Node.js 20** | Сам бот + JS runtime для yt-dlp | 2.1 |
 | **yt-dlp** (свежий бинарник) | Скачивание потоков | 2.1 |
+| **Deno** | JS-движок для подписей YouTube (**обязательно**, Node 20 у yt-dlp unsupported) | 2.2 |
 | **Docker + bgutil** | Po Token для YouTube на VPS (**обязательно**) | 2.2 |
 | **Плагин bgutil для yt-dlp** | Связка yt-dlp ↔ bgutil | 2.2 |
 | **cookies YouTube** | Запасной путь + приватные видео | 10.1 |
@@ -62,7 +63,19 @@ node -v && npm -v && yt-dlp --version && ffmpeg -version | head -1
 > **Важно:** нужен **системный ffmpeg** (`apt install ffmpeg`).  
 > Не скачивайте файл `yt-dlp` (скрипт) — нужен **`yt-dlp_linux`** (готовый бинарник).
 
-### 2.2. YouTube: Docker + bgutil + плагин (обязательно)
+### 2.2. YouTube: Deno + Docker + bgutil + плагин (обязательно)
+
+**0. Deno — JS-движок для yt-dlp:**
+
+> С 2026 yt-dlp расшифровывает подписи YouTube внешним JS-движком.  
+> Node 20 у yt-dlp помечен **unsupported** — без Deno будут только storyboards и ошибка «Requested format is not available».
+
+```bash
+apt install -y unzip
+curl -fsSL https://deno.land/install.sh | sh
+ln -sf /root/.deno/bin/deno /usr/local/bin/deno
+deno --version
+```
 
 **1. Docker и контейнер bgutil:**
 
@@ -105,6 +118,7 @@ yt-dlp -v --simulate "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1 | grep -
 echo "=== ffmpeg ===" && ffmpeg -version | head -1
 echo "=== yt-dlp ===" && yt-dlp --version
 echo "=== node ===" && node -v
+echo "=== deno ===" && deno --version | head -1
 echo "=== bgutil ===" && curl -s 127.0.0.1:4416/ping || echo "НЕ ОТВЕЧАЕТ"
 echo "=== plugin ===" && ls ~/.config/yt-dlp/plugins/ 2>&1
 ```
@@ -114,6 +128,7 @@ echo "=== plugin ===" && ls ~/.config/yt-dlp/plugins/ 2>&1
 | ffmpeg | версия, не error |
 | yt-dlp | 2025+ (не 2024.08…) |
 | node | v20.x |
+| deno | версия, не «command not found» |
 | bgutil | ответ от ping |
 | plugin | файлы/папки в plugins |
 
@@ -636,7 +651,7 @@ unzip -o bgutil.zip
 
 ```bash
 yt-dlp --cookies /opt/nyamka-bot/cookies-youtube.txt \
-  --js-runtimes "node:/usr/bin/node" \
+  --js-runtimes "deno:/usr/local/bin/deno" \
   --remote-components ejs:github \
   --extractor-args "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416" \
   --extractor-args "youtube:player_client=mweb" \
@@ -647,7 +662,8 @@ yt-dlp --cookies /opt/nyamka-bot/cookies-youtube.txt \
 | Результат | Что делать |
 |-----------|------------|
 | `Downloading...` без ERROR | `git pull` → `pm2 restart nyamka` |
-| `format is not available` | обновить yt-dlp + установить bgutil (раздел 10a) |
+| `format is not available` + в `-v` строки `Signature solving failed` / `Only images are available` | нет рабочего JS-движка — установить **Deno** (раздел 2.2, шаг 0) |
+| `format is not available` (deno стоит) | обновить yt-dlp: `yt-dlp --update-to nightly` |
 | `Sign in to confirm` | bgutil + cookies, или сменить IP VPS / другой хостинг |
 | `429` | IP VPS заблокирован Google — cookies не помогут |
 

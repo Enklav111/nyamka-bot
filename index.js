@@ -525,9 +525,24 @@ function getNodePath() {
   return null;
 }
 
+function getDenoPath() {
+  for (const p of ['/usr/local/bin/deno', '/root/.deno/bin/deno', '/usr/bin/deno']) {
+    if (existsSync(p)) return p;
+  }
+  try {
+    const p = execSync('which deno', { encoding: 'utf8' }).trim();
+    if (p && existsSync(p)) return p;
+  } catch (e) {}
+  return null;
+}
+
 function appendYoutubeRuntimeArgs(args) {
+  // yt-dlp с 2026 требует внешний JS-движок для подписей YouTube;
+  // Node 20 помечен как unsupported, поэтому предпочитаем Deno
+  const deno = getDenoPath();
   const node = getNodePath();
-  if (node) args.push('--js-runtimes', `node:${node}`);
+  if (deno) args.push('--js-runtimes', `deno:${deno}`);
+  else if (node) args.push('--js-runtimes', `node:${node}`);
   args.push('--remote-components', 'ejs:github');
 }
 
@@ -1046,9 +1061,11 @@ client.once('ready', async () => {
   } else {
     console.log('YouTube cookies: не заданы (для обычных видео достаточно bgutil+mweb)');
   }
+  const deno = getDenoPath();
   const node = getNodePath();
-  if (node) console.log(`JS runtime для yt-dlp: node (${node})`);
-  else console.warn('⚠️ JS runtime для yt-dlp не найден — нужен node (/usr/bin/node)');
+  if (deno) console.log(`JS runtime для yt-dlp: deno (${deno})`);
+  else if (node) console.warn(`⚠️ yt-dlp будет использовать node (${node}) — Node 20 у yt-dlp unsupported, YouTube может не играть. Установите deno.`);
+  else console.warn('⚠️ JS runtime для yt-dlp не найден — YouTube играть не будет. Установите deno.');
 
   await ensurePinnedHelpMessage();
 });
